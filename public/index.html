@@ -100,10 +100,33 @@ body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse
 code{background:#001500;border:1px solid var(--bdr);padding:1px 5px;font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--a)}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:#000}::-webkit-scrollbar-thumb{background:var(--gd)}
 @media(max-width:600px){.grid{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}.email-out{font-size:22px}.logo{font-size:38px}}
+/* LOGIN */
+#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:99999;display:flex;align-items:center;justify-content:center}
+#loginScreen::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.07) 2px,rgba(0,0,0,.07) 4px);pointer-events:none}
+#loginScreen::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.5) 100%);pointer-events:none}
+.login-box{border:1px solid var(--g);background:var(--panel);padding:36px 32px;width:100%;max-width:400px;box-shadow:0 0 40px var(--gg),inset 0 0 20px var(--gg);position:relative;z-index:1}
+.login-box::before{content:'▸ ACCESS CONTROL';position:absolute;top:-10px;left:20px;background:var(--panel);padding:0 8px;font-size:9px;letter-spacing:4px;color:var(--gd);font-family:'Orbitron',monospace}
+.login-logo{font-family:'VT323',monospace;font-size:72px;text-align:center;color:var(--g);text-shadow:0 0 20px var(--g),0 0 40px var(--gd);animation:glow 3s ease-in-out infinite alternate;line-height:1;margin-bottom:4px}
+.login-sub{text-align:center;font-size:10px;color:var(--gd);letter-spacing:4px;margin-bottom:28px;font-family:'Orbitron',monospace}
+.login-err{font-size:11px;color:var(--r);text-align:center;margin-bottom:10px;min-height:16px;letter-spacing:1px}
+.login-btn{width:100%;margin-top:10px;padding:12px;font-size:12px;letter-spacing:4px}
 </style>
 </head>
 <body>
-<div class="wrap">
+
+<!-- LOGIN SCREEN -->
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-logo">⚡FORGE</div>
+    <div class="login-sub">emailonly.indevs.in // PRIVATE ACCESS</div>
+    <div class="login-err" id="loginErr"></div>
+    <div class="f"><label>Email</label><input type="email" id="loginEmail" placeholder="your@email.com" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div class="f"><label>Password</label><input type="password" id="loginPass" placeholder="••••••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <button class="btn btn-g login-btn" onclick="doLogin()" id="loginBtn">[ ACCESS FORGE ]</button>
+  </div>
+</div>
+
+<div class="wrap" id="appWrap" style="display:none">
 
 <div class="hdr">
   <div class="hdr-top">
@@ -304,7 +327,7 @@ async function cfFetch(path, opts={}){
   const url=`/api/cf/${path}`;
   const res=await fetch(url,{
     method:opts.method||'GET',
-    headers:{'Content-Type':'application/json','x-cf-token':token,'x-cf-zone':zone},
+    headers:{'Content-Type':'application/json','x-cf-token':token,'x-cf-zone':zone,'x-forge-token':localStorage.getItem('forgeToken')||''},
     body:opts.body||undefined,
   });
   return res.json();
@@ -499,7 +522,43 @@ function toast(msg,type){const t=document.getElementById('toast');t.textContent=
 function sw(name,tabEl){document.querySelectorAll('.tc').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('tc-'+name).classList.add('active');if(tabEl)tabEl.classList.add('active');}
 document.getElementById('pattern').addEventListener('change',function(){document.getElementById('prefixWrap').style.display=this.value==='custom'?'block':'none';});
 
-loadConf();renderHist();updateCounters();
+// ═══ AUTH ═══
+async function doLogin(){
+  const email=document.getElementById('loginEmail').value.trim();
+  const pass=document.getElementById('loginPass').value;
+  const errEl=document.getElementById('loginErr');
+  const btn=document.getElementById('loginBtn');
+  if(!email||!pass){errEl.textContent='✗ ENTER EMAIL AND PASSWORD';return;}
+  btn.textContent='[ AUTHENTICATING... ]';btn.disabled=true;errEl.textContent='';
+  try{
+    const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pass})});
+    const d=await res.json();
+    if(res.ok&&d.token){
+      localStorage.setItem('forgeToken',d.token);
+      document.getElementById('loginScreen').style.display='none';
+      document.getElementById('appWrap').style.display='block';
+    } else {errEl.textContent='✗ '+(d.error||'INVALID CREDENTIALS');}
+  }catch(e){errEl.textContent='✗ CONNECTION ERROR';}
+  btn.textContent='[ ACCESS FORGE ]';btn.disabled=false;
+}
+function logout(){
+  localStorage.removeItem('forgeToken');
+  document.getElementById('loginScreen').style.display='flex';
+  document.getElementById('appWrap').style.display='none';
+}
+function checkAuth(){
+  const token=localStorage.getItem('forgeToken');
+  if(!token)return;
+  try{
+    const payload=JSON.parse(atob(token.split('.')[0]));
+    if(Date.now()<payload.exp){
+      document.getElementById('loginScreen').style.display='none';
+      document.getElementById('appWrap').style.display='block';
+    }else{localStorage.removeItem('forgeToken');}
+  }catch{localStorage.removeItem('forgeToken');}
+}
+
+loadConf();renderHist();updateCounters();checkAuth();
 </script>
 </body>
 </html>
