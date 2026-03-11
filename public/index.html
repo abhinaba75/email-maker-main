@@ -354,7 +354,7 @@ window.clearConf = async function(){
   if(!confirm('Clear config?'))return;
   ['cfDomain','cfToken','cfZone','cfDest'].forEach(k=>window.cfSettings[k]='');
   ['cfDomain','cfToken','cfZone','cfDest'].forEach(k=>{const e=document.getElementById(k);if(e)e.value='';});
-  await window.save();
+  window.save();
 };
 
 window.gc = function(k){
@@ -510,11 +510,12 @@ window.testConn = async function(){
   const el=document.getElementById('testOut');
   el.innerHTML='<span class="spin"></span> Testing via proxy...';
   
-  // Directly trigger a save so the tested values are preserved in Firestore
-  await window.save();
+  // Removed await window.save(); to prevent hanging test; cfFetch grabs DOM directly
   try{
-    const d=await cfFetch('email/routing');
-    if(d.success){el.innerHTML=`<span style="color:var(--g)">✓ CONNECTION OK</span><br>Email Routing: <span style="color:var(--a)">${d.result?.enabled?'ENABLED':'DISABLED'}</span><br>Modified: ${d.result?.modified||'—'}`;document.getElementById('cfStatus').innerHTML='<span class="dot"></span>CF: <span style="color:var(--g)">VERIFIED</span>';}
+    // Cloudflare recently restricted the base /email/routing endpoint from the "Email Routing Rules" permission.
+    // Testing the /rules endpoint directly instead.
+    const d=await cfFetch('email/routing/rules?per_page=1');
+    if(d.success){el.innerHTML=`<span style="color:var(--g)">✓ CONNECTION OK</span><br>API Token & Zone verified successfully.`;document.getElementById('cfStatus').innerHTML='<span class="dot"></span>CF: <span style="color:var(--g)">VERIFIED</span>';}
     else el.innerHTML=`<span style="color:var(--r)">✗ ${d.errors?.[0]?.message}</span>`;
   }catch(e){el.innerHTML=`<span style="color:var(--r)">✗ ${e.message}</span>`;}
 };
@@ -523,7 +524,7 @@ window.runHealth = async function(){
   const el=document.getElementById('healthResults');
   el.innerHTML='<span class="spin"></span> Running...';
   const checks=[];
-  try{const d=await cfFetch('email/routing');checks.push({icon:'⚡',label:'CF EMAIL ROUTING',val:'Zone reachable via proxy',status:d.success&&d.result?.enabled?'ok':'warn',statusTxt:d.result?.enabled?'ENABLED':'DISABLED'});}catch(e){checks.push({icon:'⚡',label:'CF EMAIL ROUTING',val:e.message,status:'fail',statusTxt:'ERROR'});}
+  try{const d=await cfFetch('email/routing/rules?per_page=1');checks.push({icon:'⚡',label:'CF EMAIL ROUTING',val:'Zone reachable via proxy',status:d.success?'ok':'warn',statusTxt:d.success?'CONNECTED':'ERROR'});}catch(e){checks.push({icon:'⚡',label:'CF EMAIL ROUTING',val:e.message,status:'fail',statusTxt:'ERROR'});}
   try{const d=await cfFetch('email/routing/rules/catch_all');const on=d.result?.enabled;checks.push({icon:'★',label:'CATCH-ALL',val:on?'All mail forwarded':'Individual rules required',status:on?'ok':'warn',statusTxt:on?'ACTIVE':'INACTIVE'});updateCatchallHdr(on);document.getElementById('catchallToggle').checked=on;}catch(e){checks.push({icon:'★',label:'CATCH-ALL',val:e.message,status:'fail',statusTxt:'ERROR'});}
   try{const d=await cfFetch('email/routing/rules?per_page=50');const n=d.result?.length||0;checks.push({icon:'#',label:'ROUTING RULES',val:`${n} active rules`,status:'ok',statusTxt:`${n} RULES`});}catch(e){}
   checks.push({icon:'🛡',label:'BLOCKLIST STATUS',val:'Custom domain — not on any throwaway blocklist',status:'ok',statusTxt:'CLEAN'});
