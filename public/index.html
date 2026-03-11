@@ -422,7 +422,10 @@ window.gen = async function(){
   const skip=document.getElementById('skipIfCatchall').checked;
   const autoRule=document.getElementById('autoRule').checked;
   if(autoRule&&!(catchallOn&&skip)) await createRule(window.currentEmail);
-  else addHist(window.currentEmail,false);
+  else {
+    if(autoRule && catchallOn && skip) toast('RULE SKIPPED: CATCH-ALL IS ON');
+    addHist(window.currentEmail,false);
+  }
   updateCounters();
 };
 
@@ -435,9 +438,20 @@ async function createRule(email){
       method:'POST',
       body:JSON.stringify({name:`forge-${email.split('@')[0]}`,enabled:true,priority:Date.now()%100000,matchers:[{type:'literal',field:'to',value:email}],actions:[{type:'forward',value:[dest]}]})
     });
-    if(d.success){setApiStat('ok',`✓ RULE ACTIVE → ${dest}`);addHist(email,true);}
-    else{setApiStat('err',`✗ ${d.errors?.[0]?.message||'CF error'}`);addHist(email,false);}
-  }catch(e){setApiStat('err',`✗ ${e.message}`);addHist(email,false);}
+    if(d.success){
+      setApiStat('ok',`✓ RULE ACTIVE → ${dest}`);
+      addHist(email,true);
+    } else {
+      const msg = d.errors?.[0]?.message || 'CF Error';
+      setApiStat('err',`✗ ${msg}`);
+      toast(`CLOUDFLARE ERROR: ${msg}`, 'err');
+      addHist(email,false);
+    }
+  }catch(e){
+    setApiStat('err',`✗ ${e.message}`);
+    toast(`REQUEST FAILED: ${e.message}`,'err');
+    addHist(email,false);
+  }
 }
 
 window.manualRule = async function(){if(window.currentEmail)await createRule(window.currentEmail);updateCounters();}
