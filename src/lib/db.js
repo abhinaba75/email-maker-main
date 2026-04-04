@@ -96,6 +96,12 @@ export function ensureSchema(db) {
         await db.prepare(statement).run();
       }
 
+      if (!(await hasColumn(db, 'users', 'selected_sending_domain_id'))) {
+        await db
+          .prepare('ALTER TABLE users ADD COLUMN selected_sending_domain_id TEXT')
+          .run();
+      }
+
       if (!(await hasColumn(db, 'domains', 'send_capability'))) {
         await db
           .prepare(`ALTER TABLE domains ADD COLUMN send_capability TEXT NOT NULL DEFAULT 'send_unavailable'`)
@@ -113,8 +119,8 @@ export async function upsertUser(db, user) {
   const timestamp = Date.now();
   await db
     .prepare(
-      `INSERT INTO users (id, email, display_name, photo_url, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+      `INSERT INTO users (id, email, display_name, photo_url, selected_sending_domain_id, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5)
        ON CONFLICT(id) DO UPDATE SET
          email = excluded.email,
          display_name = excluded.display_name,
@@ -128,6 +134,19 @@ export async function upsertUser(db, user) {
 
 export async function getUser(db, userId) {
   return first(db.prepare('SELECT * FROM users WHERE id = ?1').bind(userId));
+}
+
+export async function updateUserSelectedSendingDomain(db, userId, domainId) {
+  await db
+    .prepare(
+      `UPDATE users
+       SET selected_sending_domain_id = ?2,
+           updated_at = ?3
+       WHERE id = ?1`,
+    )
+    .bind(userId, domainId || null, Date.now())
+    .run();
+  return getUser(db, userId);
 }
 
 export async function listConnections(db, userId) {

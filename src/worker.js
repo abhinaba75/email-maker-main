@@ -16,6 +16,7 @@ import {
   getDraft,
   getMailbox,
   getThread,
+  getUser,
   listAliasRules,
   listConnections,
   listDomains,
@@ -30,6 +31,7 @@ import {
   updateAliasRule,
   updateDomain,
   updateMailbox,
+  updateUserSelectedSendingDomain,
   upsertForwardDestination,
   upsertUser,
 } from './lib/db.js';
@@ -59,7 +61,13 @@ import {
   sendResendEmail,
   verifyResendApiKey,
 } from './lib/providers/resend.js';
-import { deriveSendingDomainPlan, isSendEnabledResendDomain, SEND_CAPABILITY } from './lib/sending.js';
+import {
+  deriveSendingDomainPlan,
+  getResendDomainHostname,
+  getResendDomainStatus,
+  isSendEnabledResendDomain,
+  SEND_CAPABILITY,
+} from './lib/sending.js';
 
 const EMAIL_WORKER_DESTINATION = 'alias-forge-2000';
 
@@ -163,68 +171,118 @@ async function reconcileAliasRoutes(db, env, userId) {
   }
 }
 
+async function syncResendDomainMetadata(db, userId, domains, resendDomains) {
+  const resendByHostname = new Map(
+    (resendDomains || [])
+      .map((domain) => [getResendDomainHostname(domain), domain])
+      .filter(([hostname]) => hostname),
+  );
+  const updatedDomains = [];
+
+  for (const domain of domains) {
+    const resendDomain = resendByHostname.get(domain.hostname) || null;
+    const nextResendDomainId = resendDomain?.id || null;
+    const nextResendStatus = resendDomain ? getResendDomainStatus(resendDomain) : 'not_configured';
+    const needsUpdate = (domain.resend_domain_id || null) !== nextResendDomainId
+      || (domain.resend_status || 'not_started') !== nextResendStatus;
+
+    updatedDomains.push(
+      needsUpdate
+        ? await updateDomain(db, userId, domain.id, {
+            resendDomainId: nextResendDomainId,
+            resendStatus: nextResendStatus,
+          })
+        : {
+            ...domain,
+            resend_domain_id: nextResendDomainId,
+            resend_status: nextResendStatus,
+          },
+    );
+  }
+
+  return updatedDomains;
+}
+
+async function resolveSelectedSendingDomainId(db, userId, user, domains) {
+  const domainIds = new Set(domains.map((domain) => domain.id));
+  let selectedSendingDomainId = user?.selected_sending_domain_id || null;
+
+  if (selectedSendingDomainId && !domainIds.has(selectedSendingDomainId)) {
+    await updateUserSelectedSendingDomain(db, userId, null);
+    selectedSendingDomainId = null;
+  }
+
+  if (!selectedSendingDomainId) {
+    const candidates = domains.filter((domain) => domain.resend_domain_id);
+    if (candidates.length === 1) {
+      selectedSendingDomainId = candidates[0].id;
+      await updateUserSelectedSendingDomain(db, userId, selectedSendingDomainId);
+    }
+  }
+
+  return selectedSendingDomainId;
+}
+
 async function reconcileSendingDomainState(db, env, userId, options = {}) {
   const resendConnection = options.resendConnection === undefined
     ? await loadSecret(db, env, userId, 'resend')
     : options.resendConnection;
-  const domains = options.domains || await listDomains(db, userId);
+  let domains = options.domains || await listDomains(db, userId);
+  if (options.refreshResendMetadata && resendConnection) {
+    try {
+      const resendDomains = options.resendDomains || await listResendDomains(resendConnection.secret);
+      domains = await syncResendDomainMetadata(db, userId, domains, resendDomains);
+    } catch (error) {
+      console.error('resend_domain_metadata_sync_failed', error);
+    }
+  }
+
   if (!domains.length) {
     return {
       domains,
+      selectedSendingDomainId: null,
       sendingDomainId: null,
       sendingStatusMessage: resendConnection
         ? 'No Cloudflare mail domains are provisioned yet.'
-        : 'Connect Resend to enable sending from one exact-match domain.',
+        : 'Connect Resend and add a domain to enable sending.',
     };
   }
 
-  let resendLookupFailed = false;
-  let resendDomains = [];
-  if (resendConnection) {
-    try {
-      resendDomains = options.resendDomains || await listResendDomains(resendConnection.secret);
-    } catch (error) {
-      console.error('resend_domain_lookup_failed', error);
-      resendLookupFailed = true;
-      resendDomains = [];
-    }
-  }
+  const user = options.user || await getUser(db, userId);
+  const selectedSendingDomainId = await resolveSelectedSendingDomainId(db, userId, user, domains);
   const plan = deriveSendingDomainPlan(domains, {
+    selectedSendingDomainId,
     resendConnected: Boolean(resendConnection),
-    resendDomains,
-    resendLookupFailed,
   });
   const reconciledDomains = [];
 
   for (const domain of domains) {
     const domainPlan = plan.domainPlans.find((item) => item.domainId === domain.id);
-    const needsUpdate = domain.send_capability !== domainPlan.sendCapability
-      || (domain.resend_domain_id || null) !== domainPlan.resendDomainId
-      || (domain.resend_status || 'not_started') !== domainPlan.resendStatus;
+    const needsUpdate = domain.send_capability !== domainPlan.sendCapability;
 
     const nextDomain = needsUpdate
       ? await updateDomain(db, userId, domain.id, {
-          resendDomainId: domainPlan.resendDomainId,
-          resendStatus: domainPlan.resendStatus,
           sendCapability: domainPlan.sendCapability,
         })
       : {
           ...domain,
-          resend_domain_id: domainPlan.resendDomainId,
-          resend_status: domainPlan.resendStatus,
           send_capability: domainPlan.sendCapability,
           sendCapability: domainPlan.sendCapability,
           canSend: domainPlan.sendCapability === SEND_CAPABILITY.ENABLED,
         };
 
-    if (nextDomain.send_capability === SEND_CAPABILITY.ENABLED) {
-      plan.sendingDomainId = nextDomain.id;
-    }
-    reconciledDomains.push(nextDomain);
+    reconciledDomains.push({
+      ...nextDomain,
+      send_capability: domainPlan.sendCapability,
+      sendCapability: domainPlan.sendCapability,
+      canSend: domainPlan.sendCapability === SEND_CAPABILITY.ENABLED,
+      isSelectedSendingDomain: nextDomain.id === plan.selectedSendingDomainId,
+    });
   }
 
   return {
     domains: reconciledDomains,
+    selectedSendingDomainId: plan.selectedSendingDomainId,
     sendingDomainId: plan.sendingDomainId,
     sendingStatusMessage: plan.sendingStatusMessage,
   };
@@ -254,6 +312,7 @@ async function bootstrapData(db, env, userId) {
     forwardDestinations,
     aliases,
     drafts,
+    selectedSendingDomainId: reconciliation.selectedSendingDomainId,
     sendingDomainId: reconciliation.sendingDomainId,
     sendingStatusMessage: reconciliation.sendingStatusMessage,
   };
@@ -328,15 +387,18 @@ async function handleResendConnection(request, env, user) {
     },
   );
   const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id, {
+    user,
     resendConnection: {
       ...connection,
       secret: apiKey,
     },
     resendDomains: domains?.data || [],
+    refreshResendMetadata: true,
   });
   await reconcileAliasRoutes(env.DB, env, user.id);
   return json({
     connection,
+    selectedSendingDomainId: reconciliation.selectedSendingDomainId,
     sendingDomainId: reconciliation.sendingDomainId,
     sendingStatusMessage: reconciliation.sendingStatusMessage,
   });
@@ -354,6 +416,7 @@ async function handleDomains(request, env, user, pathParts) {
     const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id);
     return json({
       domains: reconciliation.domains,
+      selectedSendingDomainId: reconciliation.selectedSendingDomainId,
       sendingDomainId: reconciliation.sendingDomainId,
       sendingStatusMessage: reconciliation.sendingStatusMessage,
     });
@@ -395,6 +458,8 @@ async function handleDomains(request, env, user, pathParts) {
       routingStatus,
     });
 
+    const resend = await loadSecret(env.DB, env, user.id, 'resend');
+
     const mailbox = await createMailbox(env.DB, {
       userId: user.id,
       domainId: domain.id,
@@ -406,12 +471,17 @@ async function handleDomains(request, env, user, pathParts) {
       isDefaultSender: true,
     });
 
-    const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id);
+    const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id, {
+      user,
+      resendConnection: resend,
+      refreshResendMetadata: Boolean(resend),
+    });
     const updatedDomain = reconciliation.domains.find((item) => item.id === domain.id) || domain;
 
     return json({
       domain: updatedDomain,
       mailbox,
+      selectedSendingDomainId: reconciliation.selectedSendingDomainId,
       sendingDomainId: reconciliation.sendingDomainId,
       sendingStatusMessage: reconciliation.sendingStatusMessage,
     }, { status: 201 });
@@ -421,6 +491,7 @@ async function handleDomains(request, env, user, pathParts) {
     const domain = await getDomain(env.DB, user.id, pathParts[2]);
     if (!domain) return apiError(404, 'Domain not found');
     const cf = await loadSecret(env.DB, env, user.id, 'cloudflare');
+    const resend = await loadSecret(env.DB, env, user.id, 'resend');
     const patch = {};
     if (cf) {
       try {
@@ -431,9 +502,30 @@ async function handleDomains(request, env, user, pathParts) {
       }
     }
     const updated = await updateDomain(env.DB, user.id, domain.id, patch);
-    const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id);
+    const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id, {
+      user,
+      domains: [updated, ...(await listDomains(env.DB, user.id)).filter((item) => item.id !== updated.id)],
+      resendConnection: resend,
+      refreshResendMetadata: Boolean(resend),
+    });
     return json({
       domain: reconciliation.domains.find((item) => item.id === updated.id) || updated,
+      selectedSendingDomainId: reconciliation.selectedSendingDomainId,
+      sendingDomainId: reconciliation.sendingDomainId,
+      sendingStatusMessage: reconciliation.sendingStatusMessage,
+    });
+  }
+
+  if (request.method === 'POST' && pathParts.length === 4 && pathParts[3] === 'select-sending') {
+    const domain = await getDomain(env.DB, user.id, pathParts[2]);
+    if (!domain) return apiError(404, 'Domain not found');
+    const updatedUser = await updateUserSelectedSendingDomain(env.DB, user.id, domain.id);
+    const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id, {
+      user: updatedUser,
+    });
+    return json({
+      domain: reconciliation.domains.find((item) => item.id === domain.id) || domain,
+      selectedSendingDomainId: reconciliation.selectedSendingDomainId,
       sendingDomainId: reconciliation.sendingDomainId,
       sendingStatusMessage: reconciliation.sendingStatusMessage,
     });
@@ -785,7 +877,7 @@ async function handleSend(request, env, user) {
     : body;
 
   if (!payload.mailboxId) {
-    return apiError(400, 'Choose a sender mailbox from the send-enabled domain before sending.');
+    return apiError(400, 'Choose a sender mailbox from the selected sending domain before sending.');
   }
 
   const resend = await loadSecret(env.DB, env, user.id, 'resend');
@@ -800,7 +892,7 @@ async function handleSend(request, env, user) {
     return apiError(
       400,
       reconciliation.sendingStatusMessage
-        || 'Selected mailbox belongs to a receive-only domain. Choose a sender from the one send-enabled domain.',
+        || 'Selected mailbox does not belong to the active sending domain. Choose a sender from the selected sending domain.',
     );
   }
   if (!resend) {

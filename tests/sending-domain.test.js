@@ -4,101 +4,75 @@ import assert from 'node:assert/strict';
 import { deriveSendingDomainPlan, SEND_CAPABILITY } from '../src/lib/sending.js';
 
 const domains = [
-  { id: 'dom_one', hostname: 'mail.example.com' },
-  { id: 'dom_two', hostname: 'inbound.example.net' },
+  { id: 'dom_one', hostname: 'mail.example.com', resend_domain_id: 'rsd_one' },
+  { id: 'dom_two', hostname: 'inbound.example.net', resend_domain_id: null },
 ];
 
-test('deriveSendingDomainPlan marks all domains unavailable without a Resend connection', () => {
+test('deriveSendingDomainPlan leaves every domain receive-only when nothing is selected', () => {
   const plan = deriveSendingDomainPlan(domains, {
-    resendConnected: false,
-    resendDomains: [],
+    selectedSendingDomainId: null,
+    resendConnected: true,
   });
 
+  assert.equal(plan.selectedSendingDomainId, null);
   assert.equal(plan.sendingDomainId, null);
-  assert.equal(plan.sendingStatusMessage, 'Connect Resend to enable sending from one exact-match domain.');
+  assert.equal(plan.sendingStatusMessage, 'Choose one provisioned domain to use for sending.');
   assert.deepEqual(
-    plan.domainPlans.map((item) => ({ domainId: item.domainId, sendCapability: item.sendCapability, resendStatus: item.resendStatus })),
+    plan.domainPlans.map((item) => ({ domainId: item.domainId, sendCapability: item.sendCapability })),
     [
-      { domainId: 'dom_one', sendCapability: SEND_CAPABILITY.UNAVAILABLE, resendStatus: 'not_connected' },
-      { domainId: 'dom_two', sendCapability: SEND_CAPABILITY.UNAVAILABLE, resendStatus: 'not_connected' },
+      { domainId: 'dom_one', sendCapability: SEND_CAPABILITY.RECEIVE_ONLY },
+      { domainId: 'dom_two', sendCapability: SEND_CAPABILITY.RECEIVE_ONLY },
     ],
   );
 });
 
-test('deriveSendingDomainPlan enables sending only on the exact matched verified domain', () => {
+test('deriveSendingDomainPlan enables only the selected domain when Resend is connected', () => {
   const plan = deriveSendingDomainPlan(domains, {
+    selectedSendingDomainId: 'dom_one',
     resendConnected: true,
-    resendDomains: [
-      { id: 'rsd_one', name: 'mail.example.com', status: 'not_started', capabilities: { sending: 'enabled' } },
-    ],
   });
 
+  assert.equal(plan.selectedSendingDomainId, 'dom_one');
   assert.equal(plan.sendingDomainId, 'dom_one');
   assert.equal(plan.sendingStatusMessage, null);
   assert.deepEqual(
-    plan.domainPlans.map((item) => ({ domainId: item.domainId, sendCapability: item.sendCapability, resendStatus: item.resendStatus })),
+    plan.domainPlans.map((item) => ({ domainId: item.domainId, sendCapability: item.sendCapability })),
     [
-      { domainId: 'dom_one', sendCapability: SEND_CAPABILITY.ENABLED, resendStatus: 'not_started' },
-      { domainId: 'dom_two', sendCapability: SEND_CAPABILITY.RECEIVE_ONLY, resendStatus: 'not_configured' },
+      { domainId: 'dom_one', sendCapability: SEND_CAPABILITY.ENABLED },
+      { domainId: 'dom_two', sendCapability: SEND_CAPABILITY.RECEIVE_ONLY },
     ],
   );
 });
 
-test('deriveSendingDomainPlan leaves domains receive-only when the verified Resend domain does not match', () => {
+test('deriveSendingDomainPlan marks the selected domain unavailable when Resend is missing', () => {
   const plan = deriveSendingDomainPlan(domains, {
-    resendConnected: true,
-    resendDomains: [
-      { id: 'rsd_other', name: 'sender.example.org', status: 'not_started', capabilities: { sending: 'enabled' } },
-    ],
+    selectedSendingDomainId: 'dom_one',
+    resendConnected: false,
   });
 
+  assert.equal(plan.selectedSendingDomainId, 'dom_one');
   assert.equal(plan.sendingDomainId, null);
-  assert.equal(
-    plan.sendingStatusMessage,
-    'Send-enabled Resend domain sender.example.org does not exactly match any Cloudflare mail domain.',
+  assert.equal(plan.sendingStatusMessage, 'Connect Resend to send from mail.example.com.');
+  assert.deepEqual(
+    plan.domainPlans.map((item) => ({ domainId: item.domainId, sendCapability: item.sendCapability })),
+    [
+      { domainId: 'dom_one', sendCapability: SEND_CAPABILITY.UNAVAILABLE },
+      { domainId: 'dom_two', sendCapability: SEND_CAPABILITY.RECEIVE_ONLY },
+    ],
   );
+});
+
+test('deriveSendingDomainPlan ignores stale selected domains that no longer exist', () => {
+  const plan = deriveSendingDomainPlan(domains, {
+    selectedSendingDomainId: 'dom_missing',
+    resendConnected: true,
+  });
+
+  assert.equal(plan.selectedSendingDomainId, null);
+  assert.equal(plan.sendingDomainId, null);
+  assert.equal(plan.sendingStatusMessage, 'Choose one provisioned domain to use for sending.');
   assert.deepEqual(
     plan.domainPlans.map((item) => item.sendCapability),
     [SEND_CAPABILITY.RECEIVE_ONLY, SEND_CAPABILITY.RECEIVE_ONLY],
-  );
-});
-
-test('deriveSendingDomainPlan ignores unrelated send-enabled Resend domains when only one provisioned domain matches', () => {
-  const plan = deriveSendingDomainPlan(domains, {
-    resendConnected: true,
-    resendDomains: [
-      { id: 'rsd_one', name: 'mail.example.com', status: 'verified', capabilities: { sending: 'enabled' } },
-      { id: 'rsd_unrelated', name: 'newsletter.example.org', status: 'verified', capabilities: { sending: 'enabled' } },
-    ],
-  });
-
-  assert.equal(plan.sendingDomainId, 'dom_one');
-  assert.equal(plan.sendingStatusMessage, null);
-  assert.deepEqual(
-    plan.domainPlans.map((item) => ({ domainId: item.domainId, sendCapability: item.sendCapability, resendStatus: item.resendStatus })),
-    [
-      { domainId: 'dom_one', sendCapability: SEND_CAPABILITY.ENABLED, resendStatus: 'verified' },
-      { domainId: 'dom_two', sendCapability: SEND_CAPABILITY.RECEIVE_ONLY, resendStatus: 'not_configured' },
-    ],
-  );
-});
-
-test('deriveSendingDomainPlan disables sending when multiple send-enabled Resend domains match provisioned domains', () => {
-  const plan = deriveSendingDomainPlan(domains, {
-    resendConnected: true,
-    resendDomains: [
-      { id: 'rsd_one', name: 'mail.example.com', status: 'verified', capabilities: { sending: 'enabled' } },
-      { id: 'rsd_two', name: 'inbound.example.net', status: 'verified', capabilities: { sending: 'enabled' } },
-    ],
-  });
-
-  assert.equal(plan.sendingDomainId, null);
-  assert.equal(
-    plan.sendingStatusMessage,
-    'Multiple send-enabled Resend domains match provisioned Cloudflare mail domains. Alias Forge requires exactly one matched sending domain.',
-  );
-  assert.deepEqual(
-    plan.domainPlans.map((item) => item.sendCapability),
-    [SEND_CAPABILITY.UNAVAILABLE, SEND_CAPABILITY.UNAVAILABLE],
   );
 });
