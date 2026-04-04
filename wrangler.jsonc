@@ -1,0 +1,55 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "alias-forge-2000",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-04-04",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "alias-forge-2000",
+      "database_id": "replace-with-d1-database-id"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MAIL_BUCKET",
+      "bucket_name": "alias-forge-mail"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "MAIL_INGEST_QUEUE",
+        "queue": "alias-forge-mail-ingest"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "alias-forge-mail-ingest",
+        "max_batch_size": 8,
+        "max_batch_timeout": 5
+      }
+    ]
+  },
+  "vars": {
+    "APP_NAME": "Alias Forge 2000",
+    "INGEST_DOMAIN": "ingest.aliasforge.example",
+    "FIREBASE_PROJECT_ID": "email-maker-forge-ad61",
+    "FIREBASE_API_KEY": "",
+    "FIREBASE_AUTH_DOMAIN": "",
+    "FIREBASE_APP_ID": "",
+    "FIREBASE_MESSAGING_SENDER_ID": ""
+  }
+}
+

@@ -1,630 +1,89 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ALIAS FORGE // emailonly.indevs.in</title>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&family=Orbitron:wght@400;700;900&display=swap');
-:root{--g:#00ff41;--gd:#00aa2c;--gk:#003a0e;--gg:rgba(0,255,65,.13);--a:#ffb000;--r:#ff3131;--b:#00cfff;--bg:#020a02;--panel:#050f05;--bdr:#00ff4133;--txt:#c8ffc8}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--g);font-family:'Share Tech Mono',monospace;min-height:100vh;overflow-x:hidden;cursor:crosshair}
-body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.07) 2px,rgba(0,0,0,.07) 4px);pointer-events:none;z-index:9999}
-body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.5) 100%);pointer-events:none;z-index:9998;animation:flicker 9s infinite}
-@keyframes flicker{0%,94%,100%{opacity:1}95%{opacity:.9}97%{opacity:.95}}
-.wrap{max-width:960px;margin:0 auto;padding:16px}
-.hdr{border:1px solid var(--g);padding:18px 22px;margin-bottom:16px;background:var(--panel);box-shadow:0 0 30px var(--gg),inset 0 0 20px var(--gg)}
-.hdr-top{display:flex;align-items:center;gap:14px;margin-bottom:8px}
-.logo{font-family:'VT323',monospace;font-size:50px;line-height:1;text-shadow:0 0 20px var(--g);animation:glow 3s ease-in-out infinite alternate}
-@keyframes glow{from{text-shadow:0 0 10px var(--g),0 0 20px var(--gd)}to{text-shadow:0 0 30px var(--g),0 0 60px var(--g)}}
-.hdr-title{font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--txt);letter-spacing:4px}
-.hdr-sub{font-size:10px;color:var(--gd);margin-top:3px;letter-spacing:2px}
-.sbar{display:flex;gap:18px;flex-wrap:wrap;font-size:10px;color:var(--gd);margin-top:10px;padding-top:10px;border-top:1px solid var(--bdr)}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--g);box-shadow:0 0 6px var(--g);animation:blink 1.2s step-end infinite;margin-right:5px}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-.dot.amber{background:var(--a);box-shadow:0 0 6px var(--a)}.dot.red{background:var(--r);box-shadow:0 0 6px var(--r)}
-.tabs{display:flex;border-bottom:1px solid var(--bdr);margin-bottom:16px;flex-wrap:wrap}
-.tab{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;padding:8px 14px;cursor:pointer;color:var(--gd);background:transparent;border:none;border-bottom:2px solid transparent;text-transform:uppercase;transition:all .2s}
-.tab:hover{color:var(--g)}.tab.active{color:var(--g);border-bottom-color:var(--g);background:var(--gg)}
-.tc{display:none}.tc.active{display:block}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
-.panel{border:1px solid var(--bdr);background:var(--panel);padding:16px}
-.panel:hover{border-color:var(--gd)}
-.plab{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:3px;color:var(--gd);text-transform:uppercase;margin-bottom:12px;border-bottom:1px solid var(--bdr);padding-bottom:6px;display:flex;justify-content:space-between;align-items:center}
-.full{grid-column:1/-1}
-.f{margin-bottom:10px}
-.f label{display:block;font-size:10px;color:var(--gd);letter-spacing:2px;margin-bottom:4px;text-transform:uppercase}
-.f input,.f select{width:100%;background:#000;border:1px solid var(--bdr);color:var(--g);font-family:'Share Tech Mono',monospace;font-size:13px;padding:8px 10px;outline:none;transition:border-color .2s}
-.f input:focus,.f select:focus{border-color:var(--g);box-shadow:0 0 10px var(--gg)}
-.f input::placeholder{color:#1a4d1a}.f select option{background:#000}
-.btn{font-family:'Orbitron',monospace;font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:9px 18px;border:1px solid;cursor:pointer;transition:all .15s;background:transparent}
-.btn:active{transform:scale(.97)}
-.btn-g{border-color:var(--g);color:var(--g)}.btn-g:hover{background:var(--g);color:#000;box-shadow:0 0 20px var(--g)}
-.btn-a{border-color:var(--a);color:var(--a)}.btn-a:hover{background:var(--a);color:#000}
-.btn-r{border-color:var(--r);color:var(--r)}.btn-r:hover{background:var(--r);color:#000}
-.btn-b{border-color:var(--b);color:var(--b)}.btn-b:hover{background:var(--b);color:#000}
-.sm{font-size:9px;padding:5px 10px;letter-spacing:1px}
-.gen-box{border:1px solid var(--g);background:var(--panel);padding:22px;margin-bottom:14px;box-shadow:0 0 20px var(--gg)}
-.display{background:#000;border:1px solid var(--bdr);padding:18px;margin:14px 0;text-align:center;position:relative;overflow:hidden;cursor:pointer}
-.display::before{content:'';position:absolute;top:0;left:-100%;width:60%;height:100%;background:linear-gradient(90deg,transparent,rgba(0,255,65,.05),transparent);animation:scan 3s linear infinite}
-@keyframes scan{to{left:140%}}
-.display:hover{border-color:var(--g)}
-.email-out{font-family:'VT323',monospace;font-size:34px;color:var(--g);text-shadow:0 0 12px var(--g);word-break:break-all;letter-spacing:2px;min-height:42px}
-.email-out.empty{color:#1a4d1a;font-size:20px}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px}
-.catchall-box{border:2px solid var(--a);background:#100800;padding:18px;margin-bottom:14px;position:relative}
-.catchall-box::before{content:'★ NUCLEAR OPTION';position:absolute;top:-9px;left:12px;background:#100800;padding:0 8px;font-size:9px;color:var(--a);letter-spacing:3px;font-family:'Orbitron',monospace}
-.toggle-row{display:flex;justify-content:space-between;align-items:center;gap:12px}
-.toggle-title{font-family:'Orbitron',monospace;font-size:11px;color:var(--a);letter-spacing:2px;margin-bottom:4px}
-.toggle-desc{font-size:11px;color:#9a7a00;line-height:1.5}
-.toggle{position:relative;width:52px;height:26px;flex-shrink:0}
-.toggle input{opacity:0;width:0;height:0}
-.slider{position:absolute;inset:0;background:#1a0d00;border:1px solid var(--a);cursor:pointer;transition:.3s}
-.slider:before{content:'';position:absolute;width:18px;height:18px;left:3px;bottom:3px;background:var(--a);transition:.3s;opacity:.4}
-.toggle input:checked+.slider:before{transform:translateX(26px);opacity:1}
-.toggle input:checked+.slider{box-shadow:0 0 12px var(--a)}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
-.stat{border:1px solid var(--bdr);padding:12px;background:var(--panel);text-align:center}
-.stat-n{font-family:'VT323',monospace;font-size:44px;color:var(--g);text-shadow:0 0 15px var(--g);line-height:1}
-.stat-l{font-size:9px;color:var(--gd);letter-spacing:2px;margin-top:2px}
-.badge{font-size:9px;padding:2px 7px;border:1px solid;letter-spacing:1px;white-space:nowrap}
-.badge-g{border-color:var(--g);color:var(--g)}.badge-a{border-color:var(--a);color:var(--a)}.badge-r{border-color:var(--r);color:var(--r)}.badge-b{border-color:var(--b);color:var(--b)}
-.log{background:#000;border:1px solid var(--bdr);padding:10px;max-height:280px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--gd) #000}
-.le{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--bdr);animation:fi .3s ease}
-@keyframes fi{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
-.le:last-child{border-bottom:none}
-.le-email{color:var(--g);flex:1;word-break:break-all;font-size:12px}
-.le-time{color:var(--gd);font-size:10px;white-space:nowrap}
-.le-actions{display:flex;gap:5px}
-.log-empty{color:#1a4d1a;text-align:center;padding:20px;font-size:11px;letter-spacing:2px}
-.rule-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--bdr);background:#000;margin-bottom:6px;animation:fi .3s ease}
-.rule-item:hover{border-color:var(--gd)}
-.rule-email{color:var(--g);flex:1;font-size:12px;word-break:break-all}
-.rule-dest{color:var(--gd);font-size:10px}
-.health-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--bdr);background:#000;margin-bottom:8px}
-.health-icon{font-size:18px;min-width:22px;text-align:center}
-.health-label{font-family:'Orbitron',monospace;font-size:10px;letter-spacing:2px;color:var(--txt)}
-.health-val{font-size:11px;color:var(--gd);margin-top:3px}
-.health-status{margin-left:auto;font-size:10px;padding:3px 8px;border:1px solid}
-.ok{border-color:var(--g)!important;color:var(--g)!important}
-.warn{border-color:var(--a)!important;color:var(--a)!important}
-.fail{border-color:var(--r)!important;color:var(--r)!important}
-.api-stat{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:4px 10px;border:1px solid;margin-bottom:10px}
-.api-stat.ok{border-color:var(--g);color:var(--g)}.api-stat.err{border-color:var(--r);color:var(--r)}.api-stat.idle{border-color:var(--gd);color:var(--gd)}
-.chk{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--txt);cursor:pointer;letter-spacing:1px}
-.chk input{width:13px;height:13px;accent-color:var(--g);cursor:pointer}
-.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--gk);border-top-color:var(--g);border-radius:50%;animation:sp .6s linear infinite;vertical-align:middle;margin-right:5px}
-@keyframes sp{to{transform:rotate(360deg)}}
-.toast{position:fixed;bottom:24px;right:24px;background:var(--g);color:#000;font-family:'Orbitron',monospace;font-size:10px;font-weight:700;letter-spacing:3px;padding:10px 18px;transform:translateY(70px);opacity:0;transition:all .3s;z-index:10000}
-.toast.show{transform:translateY(0);opacity:1}
-code{background:#001500;border:1px solid var(--bdr);padding:1px 5px;font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--a)}
-::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:#000}::-webkit-scrollbar-thumb{background:var(--gd)}
-@media(max-width:600px){.grid{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}.email-out{font-size:22px}.logo{font-size:38px}}
-/* LOGIN */
-#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:99999;display:flex;align-items:center;justify-content:center}
-#loginScreen::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.07) 2px,rgba(0,0,0,.07) 4px);pointer-events:none}
-#loginScreen::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.5) 100%);pointer-events:none}
-.login-box{border:1px solid var(--g);background:var(--panel);padding:36px 32px;width:100%;max-width:400px;box-shadow:0 0 40px var(--gg),inset 0 0 20px var(--gg);position:relative;z-index:1}
-.login-box::before{content:'▸ ACCESS CONTROL';position:absolute;top:-10px;left:20px;background:var(--panel);padding:0 8px;font-size:9px;letter-spacing:4px;color:var(--gd);font-family:'Orbitron',monospace}
-.login-logo{font-family:'VT323',monospace;font-size:72px;text-align:center;color:var(--g);text-shadow:0 0 20px var(--g),0 0 40px var(--gd);animation:glow 3s ease-in-out infinite alternate;line-height:1;margin-bottom:4px}
-.login-sub{text-align:center;font-size:10px;color:var(--gd);letter-spacing:4px;margin-bottom:28px;font-family:'Orbitron',monospace}
-.login-err{font-size:11px;color:var(--r);text-align:center;margin-bottom:10px;min-height:16px;letter-spacing:1px}
-.login-btn{width:100%;margin-top:10px;padding:12px;font-size:12px;letter-spacing:4px}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alias Forge 2000</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-
-<!-- LOGIN SCREEN -->
-<div id="loginScreen">
-  <div class="login-box">
-    <div class="login-logo">⚡FORGE</div>
-    <div class="login-sub">emailonly.indevs.in // PRIVATE ACCESS</div>
-    <div class="login-err" id="loginErr"></div>
-    <div class="f"><label>Authentication</label></div>
-    <button class="btn btn-g login-btn" onclick="doLogin()" id="loginBtn">[ SIGN IN WITH GOOGLE ]</button>
-  </div>
-</div>
-
-<div class="wrap" id="appWrap" style="display:none">
-
-<div class="hdr">
-  <div class="hdr-top">
-    <div class="logo">⚡FORGE</div>
-    <div>
-      <div class="hdr-title">Cloudflare Alias Forge</div>
-      <div class="hdr-sub">emailonly.indevs.in // RECEIVE-ONLY // CATCH-ALL ENGINE</div>
+  <div id="bootScreen" class="boot-screen">
+    <div class="boot-window">
+      <div class="boot-logo">Alias Forge 2000</div>
+      <div class="boot-subtitle">Initializing secure mail console...</div>
+      <div class="boot-progress"><span></span></div>
     </div>
   </div>
-  <div class="sbar">
-    <span><span class="dot"></span>SYSTEM ONLINE</span>
-    <span id="cfStatus"><span class="dot red"></span>CF: NOT CONFIGURED</span>
-    <span id="catchallStatus"><span class="dot amber"></span>CATCH-ALL: UNKNOWN</span>
-    <span id="sessionStat">SESSION: 0 ALIASES</span>
-  </div>
-</div>
 
-<div class="tabs">
-  <button class="tab active" onclick="sw('gen',this)">// GENERATE</button>
-  <button class="tab" onclick="sw('rules',this)">// RULES</button>
-  <button class="tab" onclick="sw('health',this)">// HEALTH</button>
-  <button class="tab" onclick="sw('history',this)">// HISTORY</button>
-  <button class="tab" onclick="sw('config',this)">// CONFIG</button>
-</div>
-
-<!-- GENERATE -->
-<div class="tc active" id="tc-gen">
-  <div class="catchall-box">
-    <div class="toggle-row">
-      <div>
-        <div class="toggle-title">CATCH-ALL MODE</div>
-        <div class="toggle-desc">Every <strong>*@emailonly.indevs.in</strong> forwards to your inbox. Invent aliases on the spot — zero rule creation needed.</div>
+  <div id="loginOverlay" class="overlay hidden">
+    <div class="window dialog login-dialog">
+      <div class="title-bar">
+        <div class="title-bar-text">Alias Forge 2000 Login</div>
+        <div class="title-bar-controls"><button disabled aria-hidden="true"></button></div>
       </div>
-      <label class="toggle"><input type="checkbox" id="catchallToggle" onchange="toggleCatchAll()"><span class="slider"></span></label>
-    </div>
-    <div id="catchallMsg" style="font-size:11px;color:var(--a);margin-top:8px;display:none"></div>
-  </div>
-
-  <div class="stats">
-    <div class="stat"><div class="stat-n" id="sc-total">0</div><div class="stat-l">TOTAL GENERATED</div></div>
-    <div class="stat"><div class="stat-n" id="sc-rules">0</div><div class="stat-l">CF RULES CREATED</div></div>
-    <div class="stat"><div class="stat-n" id="sc-copied">0</div><div class="stat-l">CLIPBOARD COPIES</div></div>
-    <div class="stat"><div class="stat-n" id="sc-session">0</div><div class="stat-l">THIS SESSION</div></div>
-  </div>
-
-  <div class="gen-box">
-    <div class="plab">// ALIAS OUTPUT <span style="font-size:10px;color:var(--gd)">CLICK OUTPUT TO COPY</span></div>
-    <div class="grid" style="margin-bottom:0">
-      <div class="f">
-        <label>Pattern</label>
-        <select id="pattern">
-          <option value="human">Human Name (james.oliver)</option>
-          <option value="adj-noun">Dark Word (cold.wolf)</option>
-          <option value="word-num">Word + Number (ghost42)</option>
-          <option value="3word">3 Words (cold.iron.gate)</option>
-          <option value="hex">Hex String (a3f9c2b1)</option>
-          <option value="nato">NATO Pair (alpha.foxtrot)</option>
-          <option value="nym">Pseudonym (silent.cipher)</option>
-          <option value="custom">Custom Prefix</option>
-        </select>
-      </div>
-      <div class="f">
-        <label>Separator</label>
-        <select id="sep">
-          <option value=".">Dot ( . )</option>
-          <option value="_">Underscore ( _ )</option>
-          <option value="-">Dash ( - )</option>
-          <option value="">None</option>
-        </select>
+      <div class="window-body">
+        <div class="login-copy">
+          <h1>Windows Mail For Modern Aliases</h1>
+          <p>Sign in with Google to unlock your personal domains, inbox, routing rules, and outbound senders.</p>
+        </div>
+        <button id="googleLoginButton" class="button primary">Sign in with Google</button>
+        <p id="loginMessage" class="muted">Waiting for Firebase configuration...</p>
       </div>
     </div>
-    <div class="f" id="prefixWrap" style="display:none;margin-top:8px">
-      <label>Custom Prefix</label>
-      <input type="text" id="prefix" placeholder="e.g. shopping, discord, amazon">
-    </div>
-    <div class="display" onclick="copyEmail()" title="Click to copy">
-      <div class="email-out empty" id="emailOut">[ PRESS GENERATE ]</div>
-    </div>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-      <label class="chk"><input type="checkbox" id="autoCopy" checked> Auto-copy</label>
-      <label class="chk"><input type="checkbox" id="autoRule"> Auto-create CF rule</label>
-      <label class="chk"><input type="checkbox" id="skipIfCatchall" checked> Skip rule if catch-all ON</label>
-    </div>
-    <div id="apiStatEl" class="api-stat idle" style="display:none"><span id="apiStatTx">READY</span></div>
-    <div class="row">
-      <button class="btn btn-g" onclick="gen()">[ GENERATE ]</button>
-      <button class="btn sm btn-a" onclick="copyEmail()" id="copyBtn" style="display:none">[ COPY ]</button>
-      <button class="btn sm btn-b" onclick="manualRule()" id="ruleBtn" style="display:none">[ CREATE CF RULE ]</button>
-    </div>
   </div>
 
-  <div class="panel full">
-    <div class="plab">// BATCH GENERATE</div>
-    <div class="row" style="margin-top:0">
-      <div class="f" style="margin:0;flex:0 0 110px"><label>Count (max 50)</label><input type="number" id="batchN" value="5" min="1" max="50"></div>
-      <button class="btn sm btn-g" onclick="batch()" style="margin-top:16px">[ BATCH ]</button>
-      <button class="btn sm btn-a" onclick="exportTxt()" style="margin-top:16px">[ EXPORT .TXT ]</button>
-      <button class="btn sm btn-a" onclick="exportCsv()" style="margin-top:16px">[ EXPORT .CSV ]</button>
-    </div>
-    <div id="batchProgress" style="font-size:11px;color:var(--gd);margin-top:10px"></div>
-  </div>
-</div>
-
-<!-- RULES -->
-<div class="tc" id="tc-rules">
-  <div class="panel full">
-    <div class="plab">// CLOUDFLARE ROUTING RULES <button class="btn sm btn-b" onclick="loadRules()">[ REFRESH ]</button></div>
-    <div id="rulesContainer"><div class="log-empty">// CLICK REFRESH TO LOAD</div></div>
-    <div id="rulesPager" style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"></div>
-  </div>
-  <div class="panel full" style="margin-top:14px">
-    <div class="plab">// CATCH-ALL CONTROL</div>
-    <div id="catchallInfo" style="font-size:12px;color:var(--gd);margin-bottom:12px">Click Refresh above to load catch-all status.</div>
-    <div class="row" style="margin-top:0">
-      <button class="btn sm btn-a" onclick="enableCatchAll()">[ ENABLE CATCH-ALL ]</button>
-      <button class="btn sm btn-r" onclick="disableCatchAll()">[ DISABLE CATCH-ALL ]</button>
-    </div>
-  </div>
-</div>
-
-<!-- HEALTH -->
-<div class="tc" id="tc-health">
-  <div class="panel full">
-    <div class="plab">// DOMAIN HEALTH <button class="btn sm btn-g" onclick="runHealth()">[ RUN CHECK ]</button></div>
-    <div id="healthResults"><div class="log-empty">// PRESS RUN CHECK</div></div>
-  </div>
-</div>
-
-<!-- HISTORY -->
-<div class="tc" id="tc-history">
-  <div class="panel full">
-    <div class="plab">// ALIAS LOG <button class="btn sm btn-r" onclick="clearHist()">[ CLEAR ]</button></div>
-    <div class="log" id="histLog"><div class="log-empty">// EMPTY</div></div>
-  </div>
-</div>
-
-<!-- CONFIG -->
-<div class="tc" id="tc-config">
-  <div class="grid">
-    <div class="panel">
-      <div class="plab">// DOMAIN</div>
-      <div class="f"><label>Your Domain</label><input type="text" id="cfDomain" placeholder="emailonly.indevs.in" oninput="save()"></div>
-      <div class="f"><label>Forward-to Email</label><input type="email" id="cfDest" placeholder="you@gmail.com" oninput="save()"></div>
-    </div>
-    <div class="panel">
-      <div class="plab">// CLOUDFLARE API</div>
-      <div class="f"><label>API Token</label><input type="password" id="cfToken" placeholder="Paste your CF token" oninput="save()"></div>
-      <div class="f"><label>Zone ID</label><input type="text" id="cfZone" placeholder="32-char hex" oninput="save()"></div>
-    </div>
-  </div>
-  <div class="panel full">
-    <div class="plab">// TEST CONNECTION</div>
-    <button class="btn btn-g" onclick="testConn()">[ TEST ]</button>
-    <div id="testOut" style="margin-top:12px;font-size:12px;color:var(--gd);line-height:1.8"></div>
-  </div>
-  <div class="panel full" style="margin-top:14px">
-    <div class="plab">// DANGER</div>
-    <div class="row">
-      <button class="btn sm btn-r" onclick="clearHist()">[ CLEAR HISTORY ]</button>
-      <button class="btn sm btn-r" onclick="clearConf()">[ CLEAR CONFIG ]</button>
-    </div>
-    <p style="font-size:11px;color:var(--gd);margin-top:10px">Config stored in browser localStorage — never leaves your device.</p>
-  </div>
-</div>
-
-</div>
-<div class="toast" id="toast"></div>
-
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js";
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-firestore.js";
-
-const firebaseConfig = {
-  projectId: "email-maker-forge-ad61",
-  appId: "1:150955610279:web:a3f135ff4101c767f74b82",
-  storageBucket: "email-maker-forge-ad61.firebasestorage.app",
-  apiKey: "AIzaSyBfK7282grn32ZmkPYT-4Kzu-2M-kLaYt4",
-  authDomain: "email-maker-forge-ad61.firebaseapp.com",
-  messagingSenderId: "150955610279"
-};
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const provider = new GoogleAuthProvider();
-
-// ═══ DATA ═══
-const FIRST=['james','oliver','henry','arthur','charlie','thomas','george','freddie','oscar','harry','noah','liam','ethan','mason','logan','jacob','william','samuel','elijah','jack','leo','max','finn','evan','ryan','alex','kai','cole','dean','miles','blake','drew','reed','scott','grant'];
-const LAST=['smith','jones','taylor','brown','wilson','evans','thomas','roberts','walker','wright','thompson','harris','martin','scott','hall','green','lewis','clark','young','allen','king','baker','nelson','carter','mitchell','phillips','campbell','parker','morgan','ross'];
-const ADJ=['dark','cold','iron','ghost','void','neon','ash','silver','crimson','hollow','swift','frozen','silent','stone','midnight','sharp','feral','ancient','shadow','flux','nova','static','rust','chrome','black','deep','pale','wild','bright','raw','grim'];
-const NOUN=['wolf','gate','forge','signal','echo','drift','vault','shard','raven','tide','node','pulse','arc','veil','core','blaze','cipher','relay','chain','orbit','sector','cache','token','byte','grid','link','axis','cell','field','layer'];
-const NATO=['alpha','bravo','charlie','delta','echo','foxtrot','golf','hotel','india','juliet','kilo','lima','mike','november','oscar','papa','quebec','romeo','sierra','tango','uniform','victor','whiskey','xray','yankee','zulu'];
-const NYM_A=['mysterious','bright','silent','daring','clever','swift','bold','calm','sharp','quiet','gentle','fierce','noble','wise','brave'];
-const NYM_N=['horizon','phantom','circuit','enigma','signal','cipher','echo','vector','prism','archive','oracle','nexus','pulse','cascade','vertex'];
-
-// ═══ STATE ═══
-window.hist=JSON.parse(localStorage.getItem('afh3')||'[]');
-window.sessionCount=0; window.clipCount=0; window.currentEmail='';
-window.allRules=[]; window.rPage=0; const rPP=15;
-window.forgeUser=null; window.forgeToken=null; window.cfSettings={};
-
-// ═══ CONFIG ═══
-window.loadConf = async function(){
-  if(!window.forgeUser) return;
-  try {
-    const docSnap = await getDoc(doc(db, "users", window.forgeUser.uid));
-    if (docSnap.exists()){
-      window.cfSettings = docSnap.data();
-      ['cfDomain','cfToken','cfZone','cfDest'].forEach(k=>{const e=document.getElementById(k);if(e)e.value=window.cfSettings[k]||'';});
-    }
-  } catch(e) { console.error(e); }
-  updateHdr();
-};
-
-window.save = async function(){
-  if(!window.forgeUser) return;
-  ['cfDomain','cfToken','cfZone','cfDest'].forEach(k=>{const e=document.getElementById(k);if(e)window.cfSettings[k]=e.value.trim();});
-  try {
-    await setDoc(doc(db, "users", window.forgeUser.uid), window.cfSettings, {merge:true});
-    toast('AUTOSAVED TO FIREBASE');
-  } catch(e) { console.error(e); toast('ERROR SAVING CONFIG', 'err'); }
-  updateHdr();
-};
-
-window.clearConf = async function(){
-  if(!confirm('Clear config?'))return;
-  ['cfDomain','cfToken','cfZone','cfDest'].forEach(k=>window.cfSettings[k]='');
-  ['cfDomain','cfToken','cfZone','cfDest'].forEach(k=>{const e=document.getElementById(k);if(e)e.value='';});
-  window.save();
-};
-
-window.gc = function(k){
-  const e = document.getElementById(k);
-  if(e) return e.value.trim();
-  return window.cfSettings[k]||'';
-};
-
-function updateHdr(){
-  const ok=!!window.gc('cfToken');
-  document.getElementById('cfStatus').innerHTML=`<span class="dot ${ok?'':'red'}"></span>CF: ${ok?'<span style="color:var(--g)">CONFIGURED</span>':'<span style="color:var(--r)">NO TOKEN</span>'}`;
-}
-
-// ═══ PROXY FETCH ═══
-async function cfFetch(path, opts={}){
-  // Force grab directly from DOM fields if they exist to prevent sync race conditions
-  const tokenEl = document.getElementById('cfToken');
-  const zoneEl = document.getElementById('cfZone');
-  const token = tokenEl ? tokenEl.value.trim() : window.gc('cfToken');
-  const zone = zoneEl ? zoneEl.value.trim() : window.gc('cfZone');
-
-  if(!token||!zone) throw new Error('Token/Zone not configured — go to Config tab');
-  const url=`/api/cf/${path}`;
-  const res=await fetch(url,{
-    method:opts.method||'GET',
-    headers:{'Content-Type':'application/json','x-cf-token':token,'x-cf-zone':zone,'x-forge-token':window.forgeToken||''},
-    body:opts.body||undefined,
-  });
-  return res.json();
-}
-
-// ═══ GENERATOR ═══
-function r(a){return a[Math.floor(Math.random()*a.length)];}
-function ri(n){return Math.floor(Math.random()*n);}
-function makeLocal(){
-  const pat=document.getElementById('pattern').value;
-  const sep=document.getElementById('sep').value;
-  switch(pat){
-    case 'human':   return r(FIRST)+sep+r(LAST);
-    case 'adj-noun':return r(ADJ)+sep+r(NOUN);
-    case 'word-num':return r([...ADJ,...NOUN])+(ri(900)+100);
-    case '3word':   return r(ADJ)+sep+r(ADJ)+sep+r(NOUN);
-    case 'hex':     return [...Array(8)].map(()=>ri(16).toString(16)).join('');
-    case 'nato':    return r(NATO)+sep+r(NATO);
-    case 'nym':     return r(NYM_A)+sep+r(NYM_N);
-    case 'custom':{const px=document.getElementById('prefix').value.trim().toLowerCase().replace(/\s+/g,'')||'alias';return px+sep+r(NOUN)+(ri(90)+10);}
-  }
-}
-
-window.gen = async function(){
-  const domain=window.gc('cfDomain');
-  if(!domain){sw('config',null);toast('SET DOMAIN IN CONFIG','err');return;}
-  const local=makeLocal();
-  window.currentEmail=`${local}@${domain}`;
-  const el=document.getElementById('emailOut');
-  el.classList.remove('empty');
-  el.textContent=window.currentEmail;
-  document.getElementById('copyBtn').style.display='inline-block';
-  document.getElementById('ruleBtn').style.display='inline-block';
-  window.sessionCount++;
-  document.getElementById('sc-session').textContent=window.sessionCount;
-  document.getElementById('sessionStat').textContent=`SESSION: ${window.sessionCount} ALIASES`;
-  if(document.getElementById('autoCopy').checked) window.copyEmail(true);
-  const catchallOn=document.getElementById('catchallToggle').checked;
-  const skip=document.getElementById('skipIfCatchall').checked;
-  const autoRule=document.getElementById('autoRule').checked;
-  if(autoRule&&!(catchallOn&&skip)) await createRule(window.currentEmail);
-  else {
-    if(autoRule && catchallOn && skip) toast('RULE SKIPPED: CATCH-ALL IS ON');
-    addHist(window.currentEmail,false);
-  }
-  updateCounters();
-};
-
-async function createRule(email){
-  const dest=window.gc('cfDest');
-  if(!window.gc('cfToken')||!dest){setApiStat('err','CONFIG MISSING');addHist(email,false);return;}
-  setApiStat('loading','CREATING RULE...');
-  try{
-    const d=await cfFetch('email/routing/rules',{
-      method:'POST',
-      body:JSON.stringify({name:`forge-${email.split('@')[0]}`,enabled:true,priority:Date.now()%100000,matchers:[{type:'literal',field:'to',value:email}],actions:[{type:'forward',value:[dest]}]})
-    });
-    if(d.success){
-      setApiStat('ok',`✓ RULE ACTIVE → ${dest}`);
-      addHist(email,true);
-    } else {
-      const msg = d.errors?.[0]?.message || 'CF Error';
-      setApiStat('err',`✗ ${msg}`);
-      toast(`CLOUDFLARE ERROR: ${msg}`, 'err');
-      addHist(email,false);
-    }
-  }catch(e){
-    setApiStat('err',`✗ ${e.message}`);
-    toast(`REQUEST FAILED: ${e.message}`,'err');
-    addHist(email,false);
-  }
-}
-
-window.manualRule = async function(){if(window.currentEmail)await createRule(window.currentEmail);updateCounters();}
-
-window.loadRules = async function(){
-  document.getElementById('rulesContainer').innerHTML='<div class="log-empty"><span class="spin"></span> Loading...</div>';
-  try{
-    const d=await cfFetch('email/routing/rules?per_page=50');
-    if(!d.success)throw new Error(d.errors?.[0]?.message||'CF error');
-    window.allRules=d.result||[];
-    renderRules(0);
-    const d2=await cfFetch('email/routing/rules/catch_all');
-    if(d2.success){
-      const on=d2.result?.enabled;
-      document.getElementById('catchallInfo').innerHTML=`Catch-all: <span style="color:${on?'var(--g)':'var(--r)'}">${on?'ENABLED':'DISABLED'}</span> → ${d2.result?.actions?.[0]?.value?.join(', ')||'—'}`;
-      document.getElementById('catchallToggle').checked=on;
-      updateCatchallHdr(on);
-    }
-  }catch(e){document.getElementById('rulesContainer').innerHTML=`<div class="log-empty" style="color:var(--r)">✗ ${e.message}</div>`;}
-};
-
-function renderRules(page){
-  window.rPage=page;
-  const c=document.getElementById('rulesContainer');
-  if(!window.allRules.length){c.innerHTML='<div class="log-empty">// NO RULES</div>';return;}
-  const s=page*rPP,slice=window.allRules.slice(s,s+rPP);
-  c.innerHTML=slice.map(rule=>`
-    <div class="rule-item">
-      <span class="badge ${rule.enabled?'badge-g':'badge-r'}">${rule.enabled?'ON':'OFF'}</span>
-      <span class="rule-email">${rule.matchers?.[0]?.value||'(catch-all)'}</span>
-      <span class="rule-dest">→ ${rule.actions?.[0]?.value?.[0]||'—'}</span>
-      <div style="display:flex;gap:5px">
-        <button class="btn sm btn-a" onclick="window.toggleRule('${rule.tag}',${!rule.enabled})">${rule.enabled?'DISABLE':'ENABLE'}</button>
-        <button class="btn sm btn-r" onclick="window.deleteRule('${rule.tag}')">✕</button>
+  <div id="appShell" class="desktop hidden">
+    <div class="window shell-window">
+      <div class="title-bar">
+        <div class="title-bar-text" id="windowTitle">Alias Forge 2000</div>
+        <div class="title-bar-controls">
+          <button aria-label="Minimize"></button>
+          <button aria-label="Maximize"></button>
+          <button aria-label="Close"></button>
+        </div>
       </div>
-    </div>`).join('');
-  const total=Math.ceil(window.allRules.length/rPP);
-  const pg=document.getElementById('rulesPager');
-  pg.innerHTML='';
-  if(total>1)for(let i=0;i<total;i++){const b=document.createElement('button');b.className=`btn sm ${i===page?'btn-g':'btn-a'}`;b.textContent=i+1;b.onclick=()=>renderRules(i);pg.appendChild(b);}
-}
+      <div class="menu-bar">
+        <span>File</span>
+        <span>Edit</span>
+        <span>View</span>
+        <span>Tools</span>
+        <span>Window</span>
+        <span>Help</span>
+      </div>
+      <div class="toolbar">
+        <button class="tool-button" id="newMessageButton">New</button>
+        <button class="tool-button" id="replyButton">Reply</button>
+        <button class="tool-button" id="forwardButton">Forward</button>
+        <button class="tool-button" id="archiveButton">Archive</button>
+        <button class="tool-button" id="trashButton">Delete</button>
+        <button class="tool-button" id="refreshButton">Refresh</button>
+        <div class="toolbar-spacer"></div>
+        <label class="search-wrap">
+          <span>Find</span>
+          <input id="searchBox" type="search" placeholder="Search mail">
+        </label>
+      </div>
+      <div class="main-layout">
+        <aside class="sidebar pane bevel-inset">
+          <div class="pane-heading">Folders</div>
+          <div id="sidebarTree" class="sidebar-tree"></div>
+          <div class="pane-heading top-gap">Signed In</div>
+          <div id="userCard" class="user-card"></div>
+        </aside>
+        <main class="workbench">
+          <div id="contentView" class="pane content-pane bevel-inset"></div>
+        </main>
+      </div>
+      <div class="status-bar">
+        <div id="statusMessage" class="status-cell">Loading...</div>
+        <div class="status-cell" id="statusUser"></div>
+        <div class="status-cell" id="statusFolder"></div>
+      </div>
+    </div>
+  </div>
 
-window.toggleRule = async function(tag,enable){
-  try{const d=await cfFetch(`email/routing/rules/${tag}`,{method:'PATCH',body:JSON.stringify({enabled:enable})});if(d.success){const i=window.allRules.findIndex(r=>r.tag===tag);if(i>-1)window.allRules[i].enabled=enable;renderRules(window.rPage);toast(enable?'ENABLED':'DISABLED');}else toast(d.errors?.[0]?.message,'err');}catch(e){toast(e.message,'err');}
-};
-window.deleteRule = async function(tag){
-  if(!confirm('Delete this rule?'))return;
-  try{const d=await cfFetch(`email/routing/rules/${tag}`,{method:'DELETE'});if(d.success){window.allRules=window.allRules.filter(r=>r.tag!==tag);renderRules(window.rPage);toast('DELETED');}else toast(d.errors?.[0]?.message,'err');}catch(e){toast(e.message,'err');}
-};
+  <div id="composeOverlay" class="overlay hidden"></div>
 
-window.enableCatchAll = async function(){
-  const dest=window.gc('cfDest');if(!dest){toast('SET DESTINATION IN CONFIG','err');return;}
-  try{
-    const d=await cfFetch('email/routing/rules/catch_all',{method:'PUT',body:JSON.stringify({name:'catch-all',enabled:true,matchers:[{type:'all'}],actions:[{type:'forward',value:[dest]}]})});
-    if(d.success){document.getElementById('catchallToggle').checked=true;updateCatchallHdr(true);document.getElementById('catchallMsg').style.display='block';document.getElementById('catchallMsg').textContent=`✓ Every *@${window.gc('cfDomain')} now forwards to ${dest}`;toast('CATCH-ALL ENABLED ✓');}
-    else toast(d.errors?.[0]?.message,'err');
-  }catch(e){toast(e.message,'err');}
-};
-window.disableCatchAll = async function(){
-  try{
-    const d=await cfFetch('email/routing/rules/catch_all',{method:'PUT',body:JSON.stringify({name:'catch-all',enabled:false,matchers:[{type:'all'}],actions:[{type:'drop'}]})});
-    if(d.success){document.getElementById('catchallToggle').checked=false;updateCatchallHdr(false);toast('CATCH-ALL DISABLED');}
-    else toast(d.errors?.[0]?.message,'err');
-  }catch(e){toast(e.message,'err');}
-};
-window.toggleCatchAll = async function(){if(document.getElementById('catchallToggle').checked)await window.enableCatchAll();else await window.disableCatchAll();};
-function updateCatchallHdr(on){document.getElementById('catchallStatus').innerHTML=`<span class="dot ${on?'':'amber'}"></span>CATCH-ALL: ${on?'<span style="color:var(--g)">ON</span>':'<span style="color:var(--a)">OFF</span>'}`;}
-
-window.testConn = async function(){
-  const el=document.getElementById('testOut');
-  el.innerHTML='<span class="spin"></span> Testing via proxy...';
-  
-  // Removed await window.save(); to prevent hanging test; cfFetch grabs DOM directly
-  try{
-    // Cloudflare recently restricted the base /email/routing endpoint from the "Email Routing Rules" permission.
-    // Testing the /rules endpoint directly instead.
-    const d=await cfFetch('email/routing/rules?per_page=1');
-    if(d.success){el.innerHTML=`<span style="color:var(--g)">✓ CONNECTION OK</span><br>API Token & Zone verified successfully.`;document.getElementById('cfStatus').innerHTML='<span class="dot"></span>CF: <span style="color:var(--g)">VERIFIED</span>';}
-    else el.innerHTML=`<span style="color:var(--r)">✗ ${d.errors?.[0]?.message}</span>`;
-  }catch(e){el.innerHTML=`<span style="color:var(--r)">✗ ${e.message}</span>`;}
-};
-
-window.runHealth = async function(){
-  const el=document.getElementById('healthResults');
-  el.innerHTML='<span class="spin"></span> Running...';
-  const checks=[];
-  try{const d=await cfFetch('email/routing/rules?per_page=1');checks.push({icon:'⚡',label:'CF EMAIL ROUTING',val:'Zone reachable via proxy',status:d.success?'ok':'warn',statusTxt:d.success?'CONNECTED':'ERROR'});}catch(e){checks.push({icon:'⚡',label:'CF EMAIL ROUTING',val:e.message,status:'fail',statusTxt:'ERROR'});}
-  try{const d=await cfFetch('email/routing/rules/catch_all');const on=d.result?.enabled;checks.push({icon:'★',label:'CATCH-ALL',val:on?'All mail forwarded':'Individual rules required',status:on?'ok':'warn',statusTxt:on?'ACTIVE':'INACTIVE'});updateCatchallHdr(on);document.getElementById('catchallToggle').checked=on;}catch(e){checks.push({icon:'★',label:'CATCH-ALL',val:e.message,status:'fail',statusTxt:'ERROR'});}
-  try{const d=await cfFetch('email/routing/rules?per_page=50');const n=d.result?.length||0;checks.push({icon:'#',label:'ROUTING RULES',val:`${n} active rules`,status:'ok',statusTxt:`${n} RULES`});}catch(e){}
-  checks.push({icon:'🛡',label:'BLOCKLIST STATUS',val:'Custom domain — not on any throwaway blocklist',status:'ok',statusTxt:'CLEAN'});
-  checks.push({icon:'📬',label:'DELIVERY MODE',val:'Receive-only. CF forwards instantly on SMTP delivery. No polling.',status:'ok',statusTxt:'INSTANT'});
-  checks.push({icon:'🔑',label:'API TOKEN',val:window.gc('cfToken')?'Token set':'Missing',status:window.gc('cfToken')?'ok':'fail',statusTxt:window.gc('cfToken')?'SET':'MISSING'});
-  el.innerHTML=checks.map(c=>`<div class="health-item"><span class="health-icon">${c.icon}</span><div style="flex:1"><div class="health-label">${c.label}</div><div class="health-val">${c.val}</div></div><span class="health-status ${c.status}">${c.statusTxt}</span></div>`).join('');
-};
-
-// ═══ HISTORY ═══
-function addHist(email,cfCreated){window.hist.unshift({email,cfCreated,time:new Date().toLocaleTimeString()});if(window.hist.length>1000)window.hist.pop();localStorage.setItem('afh3',JSON.stringify(window.hist));renderHist();}
-function renderHist(){
-  const el=document.getElementById('histLog');
-  if(!window.hist.length){el.innerHTML='<div class="log-empty">// EMPTY</div>';return;}
-  el.innerHTML=window.hist.map((e,i)=>`<div class="le"><span class="le-email">${e.email}</span><span class="le-time">${e.time}</span><span class="badge ${e.cfCreated?'badge-a':'badge-b'}">${e.cfCreated?'CF RULE':'LOCAL'}</span><div class="le-actions"><button class="btn sm btn-g" style="padding:3px 7px;font-size:9px" onclick="window.cp('${e.email}')">COPY</button><button class="btn sm btn-r" style="padding:3px 7px;font-size:9px" onclick="window.delH(${i})">✕</button></div></div>`).join('');
-  updateCounters();
-}
-window.delH = function(i){window.hist.splice(i,1);localStorage.setItem('afh3',JSON.stringify(window.hist));renderHist();};
-window.clearHist = function(){if(!confirm('Clear all?'))return;window.hist=[];localStorage.removeItem('afh3');renderHist();updateCounters();};
-
-// ═══ CLIPBOARD ═══
-window.copyEmail = function(silent){if(!window.currentEmail)return;navigator.clipboard.writeText(window.currentEmail).then(()=>{if(!silent)toast('✓ COPIED');});window.clipCount++;updateCounters();};
-window.cp = function(email){navigator.clipboard.writeText(email).then(()=>toast('✓ COPIED'));window.clipCount++;updateCounters();};
-
-// ═══ BATCH ═══
-window.batch = async function(){
-  const n=Math.min(parseInt(document.getElementById('batchN').value)||5,50);
-  const domain=window.gc('cfDomain');if(!domain){toast('SET DOMAIN FIRST','err');return;}
-  const prog=document.getElementById('batchProgress');
-  const catchallOn=document.getElementById('catchallToggle').checked;
-  const skip=document.getElementById('skipIfCatchall').checked;
-  const autoRule=document.getElementById('autoRule').checked;
-  for(let i=0;i<n;i++){
-    prog.innerHTML=`<span class="spin"></span> ${i+1}/${n}...`;
-    const email=`${makeLocal()}@${domain}`;
-    window.currentEmail=email;window.sessionCount++;
-    if(autoRule&&!(catchallOn&&skip)){await createRule(email);await new Promise(r=>setTimeout(r,250));}
-    else addHist(email,false);
-  }
-  prog.textContent=`✓ ${n} aliases generated`;
-  toast(`✓ ${n} DONE`);updateCounters();
-};
-
-window.exportTxt = function(){if(!window.hist.length){toast('NOTHING TO EXPORT','err');return;}dl(window.hist.map(e=>`${e.email}\t${e.cfCreated?'CF_RULE':'LOCAL'}\t${e.time}`).join('\n'),'aliases.txt','text/plain');};
-window.exportCsv = function(){if(!window.hist.length){toast('NOTHING TO EXPORT','err');return;}dl('Email,CF Rule,Time\n'+window.hist.map(e=>`${e.email},${e.cfCreated},${e.time}`).join('\n'),'aliases.csv','text/csv');};
-function dl(c,f,t){const a=document.createElement('a');a.href='data:'+t+';charset=utf-8,'+encodeURIComponent(c);a.download=f;a.click();}
-
-// ═══ UI ═══
-function setApiStat(type,msg){const el=document.getElementById('apiStatEl'),tx=document.getElementById('apiStatTx');el.style.display='inline-flex';el.className=`api-stat ${type==='loading'?'idle':type}`;tx.innerHTML=type==='loading'?`<span class="spin"></span>${msg}`:msg;}
-function updateCounters(){document.getElementById('sc-total').textContent=window.hist.length;document.getElementById('sc-rules').textContent=window.hist.filter(e=>e.cfCreated).length;document.getElementById('sc-copied').textContent=window.clipCount;document.getElementById('sc-session').textContent=window.sessionCount;}
-function toast(msg,type){const t=document.getElementById('toast');t.textContent=msg;t.style.background=type==='err'?'var(--r)':'var(--g)';t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2200);}
-window.sw = function(name,tabEl){document.querySelectorAll('.tc').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('tc-'+name).classList.add('active');if(tabEl)tabEl.classList.add('active');};
-document.getElementById('pattern').addEventListener('change',function(){document.getElementById('prefixWrap').style.display=this.value==='custom'?'block':'none';});
-
-// ═══ AUTH ═══
-window.doLogin = async function(){
-  try {
-    document.getElementById('loginBtn').textContent = '[ AUTHENTICATING... ]';
-    await signInWithPopup(auth, provider);
-  } catch(e) {
-    document.getElementById('loginErr').textContent = '✗ ' + e.message;
-    document.getElementById('loginBtn').textContent = '[ SIGN IN WITH GOOGLE ]';
-  }
-};
-
-window.logout = async function(){
-  await signOut(auth);
-};
-
-onAuthStateChanged(auth, async (user) => {
-  if (user) {
-    window.forgeUser = user;
-    window.forgeToken = await user.getIdToken();
-    document.getElementById('loginScreen').style.display='none';
-    document.getElementById('appWrap').style.display='block';
-    document.getElementById('loginErr').textContent = '';
-    await window.loadConf();
-    renderHist(); updateCounters();
-  } else {
-    window.forgeUser = null;
-    window.forgeToken = null;
-    document.getElementById('loginScreen').style.display='flex';
-    document.getElementById('appWrap').style.display='none';
-    document.getElementById('loginBtn').textContent = '[ SIGN IN WITH GOOGLE ]';
-  }
-});
-
-</script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>
