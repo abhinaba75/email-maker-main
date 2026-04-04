@@ -94,7 +94,11 @@ body { min-height: 100vh; }
   background: linear-gradient(90deg, var(--title-start), var(--title-end));
 }
 
-.title-bar-text { font-size: 13px; font-weight: 700; }
+.title-bar-text {
+  font-size: 13px;
+  font-weight: 700;
+  user-select: none;
+}
 .title-bar-controls { display: flex; gap: 4px; }
 .title-bar-controls button {
   width: 18px;

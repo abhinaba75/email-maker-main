@@ -32,6 +32,8 @@ const state = {
   easterEggs: {
     unlocked: loadUnlockedEggs(),
     titleClicks: [],
+    titleClickTimers: [],
+    titleDoubleClickUntil: 0,
     folderClicks: [],
     menuTrail: [],
     controlTrail: [],
@@ -1541,17 +1543,27 @@ function showError(error) {
 
 function bindEasterEggs() {
   refs.windowTitle.addEventListener('dblclick', () => {
+    state.easterEggs.titleDoubleClickUntil = Date.now() + 320;
+    state.easterEggs.titleClickTimers.forEach((timer) => window.clearTimeout(timer));
+    state.easterEggs.titleClickTimers = [];
     showClippyDialog();
   });
 
   refs.windowTitle.addEventListener('click', () => {
-    const now = Date.now();
-    state.easterEggs.titleClicks = state.easterEggs.titleClicks.filter((timestamp) => now - timestamp < 2200);
-    state.easterEggs.titleClicks.push(now);
-    if (state.easterEggs.titleClicks.length >= 5) {
-      state.easterEggs.titleClicks = [];
-      triggerEnvelopeRain();
-    }
+    const timer = window.setTimeout(() => {
+      state.easterEggs.titleClickTimers = state.easterEggs.titleClickTimers.filter((entry) => entry !== timer);
+      const now = Date.now();
+      if (now < state.easterEggs.titleDoubleClickUntil) {
+        return;
+      }
+      state.easterEggs.titleClicks = state.easterEggs.titleClicks.filter((timestamp) => now - timestamp < 2200);
+      state.easterEggs.titleClicks.push(now);
+      if (state.easterEggs.titleClicks.length >= 5) {
+        state.easterEggs.titleClicks = [];
+        triggerEnvelopeRain();
+      }
+    }, 260);
+    state.easterEggs.titleClickTimers.push(timer);
   });
 
   refs.statusFolder.addEventListener('click', () => {
