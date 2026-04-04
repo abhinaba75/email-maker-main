@@ -2,6 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "alias-forge-2000",
   "main": "src/worker.js",
+  "workers_dev": true,
+  "preview_urls": true,
   "compatibility_date": "2026-04-04",
   "compatibility_flags": [
     "nodejs_compat"
@@ -18,7 +20,7 @@
     {
       "binding": "DB",
       "database_name": "alias-forge-2000",
-      "database_id": "replace-with-d1-database-id"
+      "database_id": "9dff9f33-59b9-40ca-a76f-0d6a09704b52"
     }
   ],
   "r2_buckets": [
@@ -44,12 +46,11 @@
   },
   "vars": {
     "APP_NAME": "Alias Forge 2000",
-    "INGEST_DOMAIN": "ingest.aliasforge.example",
+    "INGEST_DOMAIN": "emailonly.indevs.in",
     "FIREBASE_PROJECT_ID": "email-maker-forge-ad61",
-    "FIREBASE_API_KEY": "",
-    "FIREBASE_AUTH_DOMAIN": "",
-    "FIREBASE_APP_ID": "",
-    "FIREBASE_MESSAGING_SENDER_ID": ""
+    "FIREBASE_API_KEY": "AIzaSyBfK7282grn32ZmkPYT-4Kzu-2M-kLaYt4",
+    "FIREBASE_AUTH_DOMAIN": "email-maker-forge-ad61.firebaseapp.com",
+    "FIREBASE_APP_ID": "1:150955610279:web:a3f135ff4101c767f74b82",
+    "FIREBASE_MESSAGING_SENDER_ID": "150955610279"
   }
 }
-
