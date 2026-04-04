@@ -23,7 +23,14 @@ export function isSendEnabledResendDomain(domain) {
   return String(domain?.capabilities?.sending || '').toLowerCase() === 'enabled';
 }
 
-export function getWorkspaceSendingStatus({ resendConnected, resendLookupFailed, sendEnabledDomains, sendingHostname, sendingDomainId }) {
+export function getWorkspaceSendingStatus({
+  resendConnected,
+  resendLookupFailed,
+  sendEnabledDomains,
+  matchedSendEnabledDomains,
+  singleSendEnabledHostname,
+  sendingDomainId,
+}) {
   if (!resendConnected) {
     return 'Connect Resend to enable sending from one exact-match domain.';
   }
@@ -33,18 +40,24 @@ export function getWorkspaceSendingStatus({ resendConnected, resendLookupFailed,
   if (!sendEnabledDomains.length) {
     return 'Resend has no send-enabled domains. Receiving still works, but sending is unavailable.';
   }
-  if (sendEnabledDomains.length > 1) {
-    return 'Resend has multiple send-enabled domains. Alias Forge requires exactly one send-enabled domain.';
+  if (!matchedSendEnabledDomains.length) {
+    if (sendEnabledDomains.length === 1 && singleSendEnabledHostname && !sendingDomainId) {
+      return `Send-enabled Resend domain ${singleSendEnabledHostname} does not exactly match any Cloudflare mail domain.`;
+    }
+    return 'None of the send-enabled Resend domains exactly matches a provisioned Cloudflare mail domain.';
   }
-  if (sendingHostname && !sendingDomainId) {
-    return `Send-enabled Resend domain ${sendingHostname} does not exactly match any Cloudflare mail domain.`;
+  if (matchedSendEnabledDomains.length > 1) {
+    return 'Multiple send-enabled Resend domains match provisioned Cloudflare mail domains. Alias Forge requires exactly one matched sending domain.';
   }
   return null;
 }
 
 export function deriveSendingDomainPlan(domains, { resendConnected, resendDomains = [], resendLookupFailed = false } = {}) {
   const sendEnabledDomains = resendDomains.filter(isSendEnabledResendDomain);
-  const sendingHostname = sendEnabledDomains.length === 1 ? getResendDomainHostname(sendEnabledDomains[0]) : null;
+  const provisionedHostnames = new Set(domains.map((domain) => normalizeHostname(domain.hostname)));
+  const matchedSendEnabledDomains = sendEnabledDomains.filter((domain) => provisionedHostnames.has(getResendDomainHostname(domain)));
+  const sendingHostname = matchedSendEnabledDomains.length === 1 ? getResendDomainHostname(matchedSendEnabledDomains[0]) : null;
+  const singleSendEnabledHostname = sendEnabledDomains.length === 1 ? getResendDomainHostname(sendEnabledDomains[0]) : null;
   const resendByHostname = new Map(
     resendDomains
       .map((domain) => [getResendDomainHostname(domain), domain])
@@ -55,9 +68,17 @@ export function deriveSendingDomainPlan(domains, { resendConnected, resendDomain
   const domainPlans = domains.map((domain) => {
     const resendDomain = resendByHostname.get(normalizeHostname(domain.hostname)) || null;
     let sendCapability = SEND_CAPABILITY.UNAVAILABLE;
-    if (sendEnabledDomains.length === 1) {
+    if (sendEnabledDomains.length > 0 && matchedSendEnabledDomains.length === 0) {
+      sendCapability = SEND_CAPABILITY.RECEIVE_ONLY;
+    } else if (matchedSendEnabledDomains.length === 1) {
       sendCapability = normalizeHostname(domain.hostname) === sendingHostname
         ? SEND_CAPABILITY.ENABLED
+        : SEND_CAPABILITY.RECEIVE_ONLY;
+    } else if (matchedSendEnabledDomains.length > 1) {
+      sendCapability = matchedSendEnabledDomains.some(
+        (candidate) => getResendDomainHostname(candidate) === normalizeHostname(domain.hostname),
+      )
+        ? SEND_CAPABILITY.UNAVAILABLE
         : SEND_CAPABILITY.RECEIVE_ONLY;
     }
 
@@ -84,7 +105,8 @@ export function deriveSendingDomainPlan(domains, { resendConnected, resendDomain
       resendConnected,
       resendLookupFailed,
       sendEnabledDomains,
-      sendingHostname,
+      matchedSendEnabledDomains,
+      singleSendEnabledHostname,
       sendingDomainId,
     }),
   };
