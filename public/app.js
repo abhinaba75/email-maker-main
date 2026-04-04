@@ -13,6 +13,8 @@ const state = {
     aliases: [],
     drafts: [],
   },
+  sendingDomainId: null,
+  sendingStatusMessage: null,
   threads: [],
   selectedThread: null,
   view: 'mail',
@@ -93,16 +95,58 @@ function formatAddresses(items) {
     .join(', ');
 }
 
-function getDefaultMailbox() {
-  return state.data.mailboxes.find((mailbox) => mailbox.is_default_sender) || state.data.mailboxes[0] || null;
-}
-
 function getMailboxById(id) {
   return state.data.mailboxes.find((mailbox) => mailbox.id === id) || null;
 }
 
 function getDomainById(id) {
   return state.data.domains.find((domain) => domain.id === id) || null;
+}
+
+function getDomainSendCapability(domainId) {
+  const domain = getDomainById(domainId);
+  return domain?.sendCapability || domain?.send_capability || 'send_unavailable';
+}
+
+function getSendingDomain() {
+  return state.data.domains.find((domain) => domain.id === state.sendingDomainId && domain.canSend) || null;
+}
+
+function getSendingMailboxes() {
+  const sendingDomain = getSendingDomain();
+  if (!sendingDomain) return [];
+  return state.data.mailboxes.filter((mailbox) => mailbox.domain_id === sendingDomain.id);
+}
+
+function getDefaultMailbox() {
+  const sendingMailboxes = getSendingMailboxes();
+  return sendingMailboxes.find((mailbox) => mailbox.is_default_sender) || sendingMailboxes[0] || null;
+}
+
+function requireSendingMailbox() {
+  const mailbox = getDefaultMailbox();
+  if (!mailbox) {
+    throw new Error(
+      state.sendingStatusMessage
+        || 'Sending is unavailable until exactly one verified Resend domain matches a Cloudflare mail domain.',
+    );
+  }
+  return mailbox;
+}
+
+function formatSendCapability(value) {
+  if (value === 'send_enabled') return 'Send enabled';
+  if (value === 'receive_only') return 'Receive only';
+  return 'Send unavailable';
+}
+
+function getSendingSummaryMessage() {
+  const sendingDomain = getSendingDomain();
+  if (sendingDomain) {
+    return `Sending is enabled only on ${sendingDomain.hostname}. All other domains remain receive-only.`;
+  }
+  return state.sendingStatusMessage
+    || 'Receiving works for every Cloudflare domain. Sending is unavailable until one exact-match Resend domain is verified.';
 }
 
 async function api(path, options = {}) {
@@ -193,6 +237,8 @@ async function refreshBootstrap() {
   setStatus('Loading workspace...');
   const payload = await api('/api/bootstrap');
   state.user = payload.user;
+  state.sendingDomainId = payload.sendingDomainId || null;
+  state.sendingStatusMessage = payload.sendingStatusMessage || null;
   state.data = {
     connections: payload.connections || [],
     domains: payload.domains || [],
@@ -363,6 +409,7 @@ function renderMailView() {
 function renderConnectionsView() {
   const cf = state.data.connections.find((item) => item.provider === 'cloudflare');
   const resend = state.data.connections.find((item) => item.provider === 'resend');
+  const sendingDomain = getSendingDomain();
   refs.contentView.innerHTML = `
     <div class="stack">
       <section class="property-sheet">
@@ -381,7 +428,11 @@ function renderConnectionsView() {
             <button class="button primary" type="submit">Save Resend Connection</button>
           </form>
         </div>
-        <div class="notice">Cloudflare powers routing, alias rules, and forwarding. Resend powers outbound send and domain verification.</div>
+        <div class="notice">
+          Cloudflare powers receiving, alias rules, and forwarding for every configured domain. Resend only enables outbound send on the one exact-match verified domain.
+          <br>
+          ${escapeHtml(sendingDomain ? `Active sending domain: ${sendingDomain.hostname}` : getSendingSummaryMessage())}
+        </div>
       </section>
     </div>
   `;
@@ -444,13 +495,16 @@ function renderDomainsView() {
           <label class="label full">Display Name<input name="displayName" placeholder="Alias Forge Operator"></label>
           <div class="full"><button class="button primary" type="submit">Provision Domain</button></div>
         </form>
+        <div class="notice">
+          Cloudflare is enough to provision receiving. Sending turns on automatically only when exactly one verified Resend domain matches a Cloudflare hostname exactly.
+        </div>
       </section>
 
       <section class="property-sheet">
         <div class="property-title">Provisioned Domains</div>
         <table class="grid-table">
           <thead>
-            <tr><th>Hostname</th><th>Routing</th><th>Sending</th><th>Mailboxes</th><th>Action</th></tr>
+            <tr><th>Hostname</th><th>Routing</th><th>Capability</th><th>Resend</th><th>Mailboxes</th><th>Action</th></tr>
           </thead>
           <tbody>
             ${state.data.domains.map((domain) => {
@@ -459,14 +513,16 @@ function renderDomainsView() {
                 <tr>
                   <td>${escapeHtml(domain.hostname)}</td>
                   <td>${escapeHtml(domain.routing_status)}</td>
+                  <td>${escapeHtml(formatSendCapability(domain.sendCapability || domain.send_capability))}</td>
                   <td>${escapeHtml(domain.resend_status)}</td>
                   <td>${mailboxes.map((mailbox) => escapeHtml(mailbox.email_address)).join('<br>')}</td>
                   <td><button class="button refresh-domain" data-domain="${domain.id}" type="button">Refresh</button></td>
                 </tr>
               `;
-            }).join('') || '<tr><td colspan="5" class="muted">No domains configured.</td></tr>'}
+            }).join('') || '<tr><td colspan="6" class="muted">No domains configured.</td></tr>'}
           </tbody>
         </table>
+        <div class="notice">${escapeHtml(getSendingSummaryMessage())}</div>
       </section>
 
       <section class="property-sheet">
@@ -486,6 +542,7 @@ function renderDomainsView() {
           <label class="label"><input type="checkbox" name="isDefaultSender"> Default sender for domain</label>
           <div class="full"><button class="button" type="submit">Create Mailbox</button></div>
         </form>
+        <div class="notice">Default sender preference only matters on the one send-enabled domain. Receive-only domains still work for inboxes, aliases, and forwarding.</div>
       </section>
     </div>
   `;
@@ -783,11 +840,29 @@ function renderCompose() {
     return;
   }
 
-  const mailboxOptions = state.data.mailboxes.map((mailbox) => `
-    <option value="${mailbox.id}" ${mailbox.id === state.compose.mailboxId ? 'selected' : ''}>
-      ${escapeHtml(mailbox.email_address)}
-    </option>
-  `).join('');
+  const sendingMailboxes = getSendingMailboxes();
+  const composeMailboxIsSendEnabled = sendingMailboxes.some((mailbox) => mailbox.id === state.compose.mailboxId);
+  const mailboxOptions = [
+    !composeMailboxIsSendEnabled
+      ? `<option value="">${escapeHtml(
+          state.compose.mailboxId
+            ? 'Select a sender from the send-enabled domain'
+            : 'No send-enabled mailbox selected',
+        )}</option>`
+      : '',
+    ...sendingMailboxes.map((mailbox) => `
+      <option value="${mailbox.id}" ${mailbox.id === state.compose.mailboxId ? 'selected' : ''}>
+        ${escapeHtml(mailbox.email_address)}
+      </option>
+    `),
+  ].join('');
+  const composeNotice = composeMailboxIsSendEnabled
+    ? `Messages from this window will send through ${escapeHtml(getSendingDomain()?.hostname || 'the active sending domain')}.`
+    : escapeHtml(
+        state.compose.mailboxId
+          ? 'This draft still points at a receive-only mailbox. Pick a sender from the one send-enabled domain before sending.'
+          : getSendingSummaryMessage(),
+      );
 
   refs.composeOverlay.classList.remove('hidden');
   refs.composeOverlay.innerHTML = `
@@ -819,6 +894,7 @@ function renderCompose() {
               Subject
               <input name="subject" value="${escapeHtml(state.compose.subject || '')}">
             </label>
+            <div class="full notice">${composeNotice}</div>
             <label class="label full">
               Message
               <textarea class="compose-body" name="textBody">${escapeHtml(state.compose.textBody || '')}</textarea>
@@ -885,12 +961,13 @@ function parseInlineAddressList(text) {
 
 async function syncComposeFromForm(form) {
   const formData = new FormData(form);
-  const mailbox = getMailboxById(formData.get('mailboxId'));
+  const selectedMailboxId = String(formData.get('mailboxId') || '').trim();
+  const mailbox = selectedMailboxId ? getMailboxById(selectedMailboxId) : null;
   state.compose = {
     ...state.compose,
-    mailboxId: mailbox?.id || null,
-    domainId: mailbox?.domain_id || null,
-    fromAddress: mailbox?.email_address || '',
+    mailboxId: mailbox?.id || state.compose.mailboxId || null,
+    domainId: mailbox?.domain_id || state.compose.domainId || null,
+    fromAddress: mailbox?.email_address || state.compose.fromAddress || '',
     to: parseInlineAddressList(formData.get('to')),
     cc: parseInlineAddressList(formData.get('cc')),
     bcc: parseInlineAddressList(formData.get('bcc')),
@@ -957,7 +1034,7 @@ function quoteThread(thread) {
 }
 
 function openCompose(payload = null) {
-  const mailbox = getDefaultMailbox();
+  const mailbox = payload ? getMailboxById(payload.mailboxId) || getDefaultMailbox() : requireSendingMailbox();
   state.compose = payload || {
     id: null,
     domainId: mailbox?.domain_id || null,
@@ -1006,8 +1083,11 @@ async function handleThreadAction(action) {
 
 function buildReplyPayload(mode) {
   const thread = selectedThreadOrThrow();
+  if (mode !== 'forward' && getDomainSendCapability(thread.domain_id) !== 'send_enabled') {
+    throw new Error('Reply is blocked for receive-only domains. Forward the message or send a new mail from the one send-enabled domain.');
+  }
   const latest = thread.messages[thread.messages.length - 1];
-  const mailbox = getDefaultMailbox();
+  const mailbox = requireSendingMailbox();
   const to = mode === 'forward'
     ? []
     : [{ email: latest.from_json?.email || '', name: latest.from_json?.name || '' }];
@@ -1040,7 +1120,13 @@ async function refreshCurrentView() {
 }
 
 function bindGlobalActions() {
-  document.getElementById('newMessageButton').addEventListener('click', () => openCompose());
+  document.getElementById('newMessageButton').addEventListener('click', () => {
+    try {
+      openCompose();
+    } catch (error) {
+      showError(error);
+    }
+  });
   document.getElementById('replyButton').addEventListener('click', () => {
     try {
       openCompose(buildReplyPayload('reply'));

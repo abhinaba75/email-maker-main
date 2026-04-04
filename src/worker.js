@@ -57,11 +57,11 @@ import {
   verifyCloudflareToken,
 } from './lib/providers/cloudflare.js';
 import {
-  createResendDomain,
-  getResendDomain,
+  listResendDomains,
   sendResendEmail,
   verifyResendApiKey,
 } from './lib/providers/resend.js';
+import { deriveSendingDomainPlan, isVerifiedResendDomain, SEND_CAPABILITY } from './lib/sending.js';
 
 function buildRuntimeConfig(env) {
   return {
@@ -110,6 +110,73 @@ function parsePath(url) {
   return url.pathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
 }
 
+async function reconcileSendingDomainState(db, env, userId, options = {}) {
+  const resendConnection = options.resendConnection === undefined
+    ? await loadSecret(db, env, userId, 'resend')
+    : options.resendConnection;
+  const domains = options.domains || await listDomains(db, userId);
+  if (!domains.length) {
+    return {
+      domains,
+      sendingDomainId: null,
+      sendingStatusMessage: resendConnection
+        ? 'No Cloudflare mail domains are provisioned yet.'
+        : 'Connect Resend to enable sending from one exact-match domain.',
+    };
+  }
+
+  let resendLookupFailed = false;
+  let resendDomains = [];
+  if (resendConnection) {
+    try {
+      resendDomains = options.resendDomains || await listResendDomains(resendConnection.secret);
+    } catch (error) {
+      console.error('resend_domain_lookup_failed', error);
+      resendLookupFailed = true;
+      resendDomains = [];
+    }
+  }
+  const plan = deriveSendingDomainPlan(domains, {
+    resendConnected: Boolean(resendConnection),
+    resendDomains,
+    resendLookupFailed,
+  });
+  const reconciledDomains = [];
+
+  for (const domain of domains) {
+    const domainPlan = plan.domainPlans.find((item) => item.domainId === domain.id);
+    const needsUpdate = domain.send_capability !== domainPlan.sendCapability
+      || (domain.resend_domain_id || null) !== domainPlan.resendDomainId
+      || (domain.resend_status || 'not_started') !== domainPlan.resendStatus;
+
+    const nextDomain = needsUpdate
+      ? await updateDomain(db, userId, domain.id, {
+          resendDomainId: domainPlan.resendDomainId,
+          resendStatus: domainPlan.resendStatus,
+          sendCapability: domainPlan.sendCapability,
+        })
+      : {
+          ...domain,
+          resend_domain_id: domainPlan.resendDomainId,
+          resend_status: domainPlan.resendStatus,
+          send_capability: domainPlan.sendCapability,
+          sendCapability: domainPlan.sendCapability,
+          canSend: domainPlan.sendCapability === SEND_CAPABILITY.ENABLED,
+        };
+
+    if (nextDomain.send_capability === SEND_CAPABILITY.ENABLED) {
+      plan.sendingDomainId = nextDomain.id;
+    }
+    reconciledDomains.push(nextDomain);
+  }
+
+  return {
+    domains: reconciledDomains,
+    sendingDomainId: plan.sendingDomainId,
+    sendingStatusMessage: plan.sendingStatusMessage,
+  };
+}
+
 async function getAuthenticatedContext(request, env) {
   await ensureSchema(env.DB);
   const profile = await requireUser(request, env);
@@ -117,10 +184,10 @@ async function getAuthenticatedContext(request, env) {
   return { user };
 }
 
-async function bootstrapData(db, userId) {
-  const [connections, domains, mailboxes, forwardDestinations, aliases, drafts] = await Promise.all([
+async function bootstrapData(db, env, userId) {
+  const [connections, reconciliation, mailboxes, forwardDestinations, aliases, drafts] = await Promise.all([
     listConnections(db, userId),
-    listDomains(db, userId),
+    reconcileSendingDomainState(db, env, userId),
     listMailboxes(db, userId),
     listForwardDestinations(db, userId),
     listAliasRules(db, userId),
@@ -128,11 +195,13 @@ async function bootstrapData(db, userId) {
   ]);
   return {
     connections: connections.map(toConnectionSummary),
-    domains,
+    domains: reconciliation.domains,
     mailboxes,
     forwardDestinations,
     aliases,
     drafts,
+    sendingDomainId: reconciliation.sendingDomainId,
+    sendingStatusMessage: reconciliation.sendingStatusMessage,
   };
 }
 
@@ -200,9 +269,21 @@ async function handleResendConnection(request, env, user) {
     apiKey,
     {
       domainCount: domains?.data?.length || 0,
+      verifiedDomainCount: (domains?.data || []).filter(isVerifiedResendDomain).length,
     },
   );
-  return json({ connection });
+  const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id, {
+    resendConnection: {
+      ...connection,
+      secret: apiKey,
+    },
+    resendDomains: domains?.data || [],
+  });
+  return json({
+    connection,
+    sendingDomainId: reconciliation.sendingDomainId,
+    sendingStatusMessage: reconciliation.sendingStatusMessage,
+  });
 }
 
 async function handleCloudflareZones(env, user) {
@@ -214,14 +295,18 @@ async function handleCloudflareZones(env, user) {
 
 async function handleDomains(request, env, user, pathParts) {
   if (request.method === 'GET' && pathParts.length === 2) {
-    return json({ domains: await listDomains(env.DB, user.id) });
+    const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id);
+    return json({
+      domains: reconciliation.domains,
+      sendingDomainId: reconciliation.sendingDomainId,
+      sendingStatusMessage: reconciliation.sendingStatusMessage,
+    });
   }
 
   if (request.method === 'POST' && pathParts.length === 2) {
     const body = await readJson(request);
     const cf = await loadSecret(env.DB, env, user.id, 'cloudflare');
-    const resend = await loadSecret(env.DB, env, user.id, 'resend');
-    if (!cf || !resend) return apiError(400, 'Connect Cloudflare and Resend first');
+    if (!cf) return apiError(400, 'Connect Cloudflare first');
 
     const zones = await listZones(cf.secret);
     const zone = zones.find((entry) => entry.id === body.zoneId);
@@ -243,21 +328,14 @@ async function handleDomains(request, env, user, pathParts) {
       }
     }
 
-    let resendDomain = null;
-    try {
-      resendDomain = await createResendDomain(resend.secret, hostname);
-    } catch (error) {
-      if (error.status !== 409) throw error;
-    }
-
     const domain = await createDomain(env.DB, {
       userId: user.id,
       zoneId: zone.id,
       accountId: zone.account?.id || '',
       hostname,
       label: body.label || hostname,
-      resendDomainId: resendDomain?.id || null,
-      resendStatus: resendDomain?.status || 'pending',
+      resendStatus: 'not_configured',
+      sendCapability: SEND_CAPABILITY.UNAVAILABLE,
       routingStatus,
     });
 
@@ -272,14 +350,21 @@ async function handleDomains(request, env, user, pathParts) {
       isDefaultSender: true,
     });
 
-    return json({ domain, mailbox }, { status: 201 });
+    const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id);
+    const updatedDomain = reconciliation.domains.find((item) => item.id === domain.id) || domain;
+
+    return json({
+      domain: updatedDomain,
+      mailbox,
+      sendingDomainId: reconciliation.sendingDomainId,
+      sendingStatusMessage: reconciliation.sendingStatusMessage,
+    }, { status: 201 });
   }
 
   if (request.method === 'POST' && pathParts.length === 4 && pathParts[3] === 'refresh') {
     const domain = await getDomain(env.DB, user.id, pathParts[2]);
     if (!domain) return apiError(404, 'Domain not found');
     const cf = await loadSecret(env.DB, env, user.id, 'cloudflare');
-    const resend = await loadSecret(env.DB, env, user.id, 'resend');
     const patch = {};
     if (cf) {
       try {
@@ -289,17 +374,13 @@ async function handleDomains(request, env, user, pathParts) {
         patch.routingStatus = domain.routing_status;
       }
     }
-    if (resend && domain.resend_domain_id) {
-      try {
-        const resendDomain = await getResendDomain(resend.secret, domain.resend_domain_id);
-        patch.resendDomainId = resendDomain.id || domain.resend_domain_id;
-        patch.resendStatus = resendDomain.status || resendDomain.data?.status || domain.resend_status;
-      } catch {
-        patch.resendStatus = domain.resend_status;
-      }
-    }
     const updated = await updateDomain(env.DB, user.id, domain.id, patch);
-    return json({ domain: updated });
+    const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id);
+    return json({
+      domain: reconciliation.domains.find((item) => item.id === updated.id) || updated,
+      sendingDomainId: reconciliation.sendingDomainId,
+      sendingStatusMessage: reconciliation.sendingStatusMessage,
+    });
   }
 
   return apiError(405, 'Unsupported domain route');
@@ -650,8 +731,6 @@ async function materializeAttachments(env, attachments) {
 }
 
 async function handleSend(request, env, user) {
-  const resend = await loadSecret(env.DB, env, user.id, 'resend');
-  if (!resend) return apiError(400, 'Connect Resend first');
   const body = await readJson(request);
   const draftId = body.draftId || body.id || null;
   const draft = draftId ? await getDraft(env.DB, user.id, draftId) : null;
@@ -672,10 +751,28 @@ async function handleSend(request, env, user) {
       }
     : body;
 
+  if (!payload.mailboxId) {
+    return apiError(400, 'Choose a sender mailbox from the send-enabled domain before sending.');
+  }
+
+  const resend = await loadSecret(env.DB, env, user.id, 'resend');
+  const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id, {
+    resendConnection: resend,
+  });
   const mailbox = await getMailbox(env.DB, user.id, payload.mailboxId);
   if (!mailbox) return apiError(404, 'Mailbox not found');
-  const domain = await getDomain(env.DB, user.id, payload.domainId || mailbox.domain_id);
+  const domain = await getDomain(env.DB, user.id, mailbox.domain_id);
   if (!domain) return apiError(404, 'Domain not found');
+  if (domain.send_capability !== SEND_CAPABILITY.ENABLED) {
+    return apiError(
+      400,
+      reconciliation.sendingStatusMessage
+        || 'Selected mailbox belongs to a receive-only domain. Choose a sender from the one send-enabled domain.',
+    );
+  }
+  if (!resend) {
+    return apiError(400, reconciliation.sendingStatusMessage || 'Connect Resend to enable sending.');
+  }
   const to = parseAddressList(payload.to || []);
   const cc = parseAddressList(payload.cc || []);
   const bcc = parseAddressList(payload.bcc || []);
@@ -818,7 +915,7 @@ export default {
       if (parts[1] === 'bootstrap' && request.method === 'GET') {
         return json({
           user,
-          ...(await bootstrapData(env.DB, user.id)),
+          ...(await bootstrapData(env.DB, env, user.id)),
         });
       }
 

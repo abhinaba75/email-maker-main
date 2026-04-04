@@ -10,6 +10,8 @@ const JSON_FIELDS = {
   drafts: ['to_json', 'cc_json', 'bcc_json', 'attachment_json'],
 };
 
+const SEND_CAPABILITIES = new Set(['send_enabled', 'receive_only', 'send_unavailable']);
+
 let schemaPromise;
 
 function splitSqlStatements(sql) {
@@ -33,12 +35,29 @@ function serializeJson(value) {
   return JSON.stringify(value ?? []);
 }
 
+function normalizeSendCapability(value) {
+  return SEND_CAPABILITIES.has(value) ? value : 'send_unavailable';
+}
+
+function decorateDomain(row) {
+  const sendCapability = normalizeSendCapability(row.send_capability || row.sendCapability);
+  return {
+    ...row,
+    send_capability: sendCapability,
+    sendCapability,
+    canSend: sendCapability === 'send_enabled',
+  };
+}
+
 function mapRow(table, row) {
   if (!row) return null;
   const next = { ...row };
   for (const field of JSON_FIELDS[table] || []) {
     const fallback = field === 'metadata_json' || field === 'from_json' ? {} : [];
     next[field] = parseJson(next[field], fallback);
+  }
+  if (table === 'domains') {
+    return decorateDomain(next);
   }
   return next;
 }
@@ -53,16 +72,22 @@ async function all(stmt) {
   return result.results || [];
 }
 
+async function hasColumn(db, tableName, columnName) {
+  const columns = await all(db.prepare(`PRAGMA table_info(${tableName})`));
+  return columns.some((column) => column.name === columnName);
+}
+
 export function ensureSchema(db) {
   if (!schemaPromise) {
     schemaPromise = (async () => {
-      const existingUsersTable = await first(
-        db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users' LIMIT 1`),
-      );
-      if (existingUsersTable) return;
-
       for (const statement of splitSqlStatements(SCHEMA_SQL)) {
         await db.prepare(statement).run();
+      }
+
+      if (!(await hasColumn(db, 'domains', 'send_capability'))) {
+        await db
+          .prepare(`ALTER TABLE domains ADD COLUMN send_capability TEXT NOT NULL DEFAULT 'send_unavailable'`)
+          .run();
       }
     })().catch((error) => {
       schemaPromise = undefined;
@@ -170,9 +195,9 @@ export async function createDomain(db, data) {
     .prepare(
       `INSERT INTO domains (
          id, user_id, zone_id, account_id, hostname, label, resend_domain_id, resend_status,
-         routing_status, catch_all_mode, catch_all_mailbox_id, catch_all_forward_json,
+         send_capability, routing_status, catch_all_mode, catch_all_mailbox_id, catch_all_forward_json,
          ingest_destination_id, created_at, updated_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)`,
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)`,
     )
     .bind(
       id,
@@ -183,6 +208,7 @@ export async function createDomain(db, data) {
       data.label,
       data.resendDomainId || null,
       data.resendStatus || 'not_started',
+      normalizeSendCapability(data.sendCapability || data.send_capability),
       data.routingStatus || 'pending',
       data.catchAllMode || 'inbox_only',
       data.catchAllMailboxId || null,
@@ -208,12 +234,13 @@ export async function updateDomain(db, userId, domainId, patch) {
            label = ?4,
            resend_domain_id = ?5,
            resend_status = ?6,
-           routing_status = ?7,
-           catch_all_mode = ?8,
-           catch_all_mailbox_id = ?9,
-           catch_all_forward_json = ?10,
-           ingest_destination_id = ?11,
-           updated_at = ?12
+           send_capability = ?7,
+           routing_status = ?8,
+           catch_all_mode = ?9,
+           catch_all_mailbox_id = ?10,
+           catch_all_forward_json = ?11,
+           ingest_destination_id = ?12,
+           updated_at = ?13
        WHERE user_id = ?1 AND id = ?2`,
     )
     .bind(
@@ -223,6 +250,7 @@ export async function updateDomain(db, userId, domainId, patch) {
       next.label,
       next.resend_domain_id || next.resendDomainId || null,
       next.resend_status || next.resendStatus || 'not_started',
+      normalizeSendCapability(next.send_capability || next.sendCapability),
       next.routing_status || next.routingStatus || 'pending',
       next.catch_all_mode || next.catchAllMode || 'inbox_only',
       next.catch_all_mailbox_id || next.catchAllMailboxId || null,

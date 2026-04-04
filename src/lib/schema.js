@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS domains (
   label TEXT NOT NULL,
   resend_domain_id TEXT,
   resend_status TEXT NOT NULL DEFAULT 'not_started',
+  send_capability TEXT NOT NULL DEFAULT 'send_unavailable',
   routing_status TEXT NOT NULL DEFAULT 'pending',
   catch_all_mode TEXT NOT NULL DEFAULT 'inbox_only',
   catch_all_mailbox_id TEXT,
@@ -206,4 +207,3 @@ CREATE INDEX IF NOT EXISTS idx_mailboxes_domain ON mailboxes(domain_id, email_ad
 CREATE INDEX IF NOT EXISTS idx_forward_destinations_user ON forward_destinations(user_id, email);
 CREATE INDEX IF NOT EXISTS idx_alias_rules_user ON alias_rules(user_id, domain_id, created_at DESC);
 `;
-
