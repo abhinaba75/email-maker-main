@@ -29,7 +29,7 @@ test('deriveSendingDomainPlan enables sending only on the exact matched verified
   const plan = deriveSendingDomainPlan(domains, {
     resendConnected: true,
     resendDomains: [
-      { id: 'rsd_one', name: 'mail.example.com', status: 'verified' },
+      { id: 'rsd_one', name: 'mail.example.com', status: 'not_started', capabilities: { sending: 'enabled' } },
     ],
   });
 
@@ -38,7 +38,7 @@ test('deriveSendingDomainPlan enables sending only on the exact matched verified
   assert.deepEqual(
     plan.domainPlans.map((item) => ({ domainId: item.domainId, sendCapability: item.sendCapability, resendStatus: item.resendStatus })),
     [
-      { domainId: 'dom_one', sendCapability: SEND_CAPABILITY.ENABLED, resendStatus: 'verified' },
+      { domainId: 'dom_one', sendCapability: SEND_CAPABILITY.ENABLED, resendStatus: 'not_started' },
       { domainId: 'dom_two', sendCapability: SEND_CAPABILITY.RECEIVE_ONLY, resendStatus: 'not_configured' },
     ],
   );
@@ -48,14 +48,14 @@ test('deriveSendingDomainPlan leaves domains receive-only when the verified Rese
   const plan = deriveSendingDomainPlan(domains, {
     resendConnected: true,
     resendDomains: [
-      { id: 'rsd_other', name: 'sender.example.org', status: 'verified' },
+      { id: 'rsd_other', name: 'sender.example.org', status: 'not_started', capabilities: { sending: 'enabled' } },
     ],
   });
 
   assert.equal(plan.sendingDomainId, null);
   assert.equal(
     plan.sendingStatusMessage,
-    'Verified Resend domain sender.example.org does not exactly match any Cloudflare mail domain.',
+    'Send-enabled Resend domain sender.example.org does not exactly match any Cloudflare mail domain.',
   );
   assert.deepEqual(
     plan.domainPlans.map((item) => item.sendCapability),
@@ -67,15 +67,15 @@ test('deriveSendingDomainPlan disables sending when multiple verified Resend dom
   const plan = deriveSendingDomainPlan(domains, {
     resendConnected: true,
     resendDomains: [
-      { id: 'rsd_one', name: 'mail.example.com', status: 'verified' },
-      { id: 'rsd_two', name: 'inbound.example.net', status: 'verified' },
+      { id: 'rsd_one', name: 'mail.example.com', status: 'verified', capabilities: { sending: 'enabled' } },
+      { id: 'rsd_two', name: 'inbound.example.net', status: 'verified', capabilities: { sending: 'enabled' } },
     ],
   });
 
   assert.equal(plan.sendingDomainId, null);
   assert.equal(
     plan.sendingStatusMessage,
-    'Resend has multiple verified domains. Alias Forge requires exactly one verified sending domain.',
+    'Resend has multiple send-enabled domains. Alias Forge requires exactly one send-enabled domain.',
   );
   assert.deepEqual(
     plan.domainPlans.map((item) => item.sendCapability),

@@ -59,7 +59,7 @@ import {
   sendResendEmail,
   verifyResendApiKey,
 } from './lib/providers/resend.js';
-import { deriveSendingDomainPlan, isVerifiedResendDomain, SEND_CAPABILITY } from './lib/sending.js';
+import { deriveSendingDomainPlan, isSendEnabledResendDomain, SEND_CAPABILITY } from './lib/sending.js';
 
 const EMAIL_WORKER_DESTINATION = 'alias-forge-2000';
 
@@ -324,7 +324,7 @@ async function handleResendConnection(request, env, user) {
     apiKey,
     {
       domainCount: domains?.data?.length || 0,
-      verifiedDomainCount: (domains?.data || []).filter(isVerifiedResendDomain).length,
+      verifiedDomainCount: (domains?.data || []).filter(isSendEnabledResendDomain).length,
     },
   );
   const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id, {
