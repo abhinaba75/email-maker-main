@@ -117,6 +117,16 @@ body { min-height: 100vh; }
 }
 
 .menu-bar { font-size: 12px; }
+.menu-bar span {
+  padding: 2px 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.menu-bar span:hover,
+.menu-bar span.menu-active {
+  background: var(--selection-soft);
+  color: var(--text);
+}
 .toolbar { gap: 8px; }
 .tool-button, .button {
   min-height: 28px;
@@ -319,6 +329,229 @@ textarea { min-height: 120px; resize: vertical; }
   padding: 0 8px;
   border-right: 1px solid #a4a4a4;
   font-size: 12px;
+}
+
+.effect-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+#eggOverlay {
+  z-index: 80;
+}
+
+.egg-toast {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  max-width: 320px;
+  padding: 10px 12px;
+  background: var(--chrome);
+  border-top: 2px solid var(--chrome-light);
+  border-left: 2px solid var(--chrome-light);
+  border-right: 2px solid var(--chrome-darker);
+  border-bottom: 2px solid var(--chrome-darker);
+  box-shadow: 4px 6px 16px var(--shadow);
+  font-size: 12px;
+  animation: egg-toast-in 3.4s ease forwards;
+}
+
+.egg-toast strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.egg-envelope {
+  position: absolute;
+  top: -64px;
+  width: 46px;
+  height: 32px;
+  background: #fffdf7;
+  border: 2px solid #7d7d7d;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.12);
+  animation: egg-envelope-fall var(--duration, 4s) linear forwards;
+  transform: rotate(var(--rotation, 0deg));
+}
+
+.egg-envelope::before,
+.egg-envelope::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.egg-envelope::before {
+  clip-path: polygon(0 0, 50% 56%, 100% 0, 100% 100%, 0 100%);
+  background: linear-gradient(180deg, #fefefe, #ece7da);
+}
+
+.egg-envelope::after {
+  clip-path: polygon(0 100%, 50% 48%, 100% 100%);
+  background: linear-gradient(180deg, #dfd7c8, #fefefe);
+}
+
+.pipes-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 27, 53, 0.22);
+}
+
+.pipe-segment {
+  position: absolute;
+  width: var(--width, 160px);
+  height: var(--height, 18px);
+  border: 4px solid var(--pipe-color, #9fc6ff);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.18);
+  animation: pipe-drift var(--duration, 7s) linear forwards;
+}
+
+.egg-special-window {
+  width: min(520px, calc(100vw - 28px));
+}
+
+.egg-window-body {
+  padding: 14px;
+}
+
+.egg-window-copy {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.egg-window-copy p {
+  margin: 0 0 10px;
+}
+
+.egg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.bsod-screen {
+  width: min(960px, calc(100vw - 24px));
+  min-height: min(620px, calc(100vh - 24px));
+  padding: 24px;
+  background: #0000aa;
+  color: #f4f4ff;
+  font-family: "Lucida Console", "Courier New", monospace;
+  font-size: 16px;
+  line-height: 1.75;
+  box-shadow: 0 0 0 2px #0000aa;
+}
+
+.bsod-screen strong {
+  display: inline-block;
+  margin-bottom: 18px;
+  padding: 0 6px;
+  background: #c0c0c0;
+  color: #0000aa;
+}
+
+.task-list {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  margin-top: 10px;
+}
+
+.task-list th,
+.task-list td {
+  padding: 6px 8px;
+  border: 1px solid #9a9a9a;
+  font-size: 12px;
+  text-align: left;
+}
+
+.task-list th {
+  background: #dbe3f3;
+}
+
+.mines-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 34px);
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.mine-cell {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.mine-cell.revealed {
+  border-top: 2px solid var(--chrome-darker);
+  border-left: 2px solid var(--chrome-darker);
+  border-right: 2px solid var(--chrome-light);
+  border-bottom: 2px solid var(--chrome-light);
+  background: #ececec;
+}
+
+.egg-theme-matrix {
+  --desktop: #09240f;
+  --desktop-dark: #030f06;
+  --title-start: #0a3514;
+  --title-end: #2d8c40;
+  --selection: #107c2a;
+  --selection-soft: #d9f7df;
+  --panel: #edf5ee;
+}
+
+.egg-theme-plus {
+  --desktop: #38527a;
+  --desktop-dark: #253651;
+  --title-start: #6b2b19;
+  --title-end: #f0bb74;
+  --selection: #7a3a14;
+  --selection-soft: #f8e2cc;
+  --panel: #f7f1e6;
+}
+
+.shell-window.egg-shake {
+  animation: egg-shake 0.45s linear 2;
+}
+
+@keyframes egg-toast-in {
+  0% { opacity: 0; transform: translateY(30px); }
+  10%, 80% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(16px); }
+}
+
+@keyframes egg-envelope-fall {
+  from {
+    transform: translateY(0) rotate(var(--rotation, 0deg));
+    opacity: 0.95;
+  }
+  to {
+    transform: translateY(calc(100vh + 100px)) rotate(calc(var(--rotation, 0deg) + 24deg));
+    opacity: 0.12;
+  }
+}
+
+@keyframes pipe-drift {
+  from {
+    transform: translate3d(var(--from-x, 0), var(--from-y, 0), 0) rotate(var(--rotate, 0deg));
+    opacity: 0.9;
+  }
+  to {
+    transform: translate3d(var(--to-x, 0), var(--to-y, 0), 0) rotate(var(--rotate, 0deg));
+    opacity: 0;
+  }
+}
+
+@keyframes egg-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
 }
 
 .login-dialog .window-body { padding: 18px; }

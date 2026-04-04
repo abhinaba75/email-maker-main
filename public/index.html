@@ -38,18 +38,18 @@
       <div class="title-bar">
         <div class="title-bar-text" id="windowTitle">Alias Forge 2000</div>
         <div class="title-bar-controls">
-          <button aria-label="Minimize"></button>
-          <button aria-label="Maximize"></button>
-          <button aria-label="Close"></button>
+          <button aria-label="Minimize" data-window-control="minimize"></button>
+          <button aria-label="Maximize" data-window-control="maximize"></button>
+          <button aria-label="Close" data-window-control="close"></button>
         </div>
       </div>
       <div class="menu-bar">
-        <span>File</span>
-        <span>Edit</span>
-        <span>View</span>
-        <span>Tools</span>
-        <span>Window</span>
-        <span>Help</span>
+        <span data-menu="File">File</span>
+        <span data-menu="Edit">Edit</span>
+        <span data-menu="View">View</span>
+        <span data-menu="Tools">Tools</span>
+        <span data-menu="Window">Window</span>
+        <span data-menu="Help">Help</span>
       </div>
       <div class="toolbar">
         <button class="tool-button" id="newMessageButton">New</button>
@@ -84,6 +84,8 @@
   </div>
 
   <div id="composeOverlay" class="overlay hidden"></div>
+  <div id="eggOverlay" class="overlay hidden"></div>
+  <div id="effectLayer" class="effect-layer" aria-hidden="true"></div>
 
   <script type="module" src="/app.js"></script>
 </body>

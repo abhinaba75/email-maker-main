@@ -1,3 +1,9 @@
+const EASTER_EGG_STORAGE_KEY = 'alias-forge-2000-eggs';
+const KONAMI_SEQUENCE = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
+const MENU_SECRET_SEQUENCE = ['Help', 'Window', 'Tools', 'View', 'Edit', 'File'];
+const WINDOW_CONTROL_SEQUENCE = ['minimize', 'maximize', 'close'];
+const EASTER_EGG_TOTAL = 10;
+
 const state = {
   runtime: null,
   auth: null,
@@ -23,6 +29,17 @@ const state = {
   mailboxId: null,
   status: 'Booting mail console...',
   compose: null,
+  easterEggs: {
+    unlocked: loadUnlockedEggs(),
+    titleClicks: [],
+    folderClicks: [],
+    menuTrail: [],
+    controlTrail: [],
+    konamiTrail: [],
+    minesweeper: null,
+    matrixMode: false,
+    plusMode: false,
+  },
 };
 
 const refs = {
@@ -39,6 +56,12 @@ const refs = {
   userCard: document.getElementById('userCard'),
   searchBox: document.getElementById('searchBox'),
   composeOverlay: document.getElementById('composeOverlay'),
+  eggOverlay: document.getElementById('eggOverlay'),
+  effectLayer: document.getElementById('effectLayer'),
+  windowTitle: document.getElementById('windowTitle'),
+  shellWindow: document.querySelector('.shell-window'),
+  menuItems: Array.from(document.querySelectorAll('[data-menu]')),
+  windowControls: Array.from(document.querySelectorAll('[data-window-control]')),
 };
 
 const sidebarModel = [
@@ -62,6 +85,337 @@ const sidebarModel = [
     ],
   },
 ];
+
+function loadUnlockedEggs() {
+  try {
+    const raw = localStorage.getItem(EASTER_EGG_STORAGE_KEY);
+    const parsed = JSON.parse(raw || '[]');
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveUnlockedEggs() {
+  try {
+    localStorage.setItem(
+      EASTER_EGG_STORAGE_KEY,
+      JSON.stringify(Array.from(state.easterEggs.unlocked).sort()),
+    );
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function unlockEgg(id, title, detail) {
+  const alreadyUnlocked = state.easterEggs.unlocked.has(id);
+  if (!alreadyUnlocked) {
+    state.easterEggs.unlocked.add(id);
+    saveUnlockedEggs();
+  }
+  showEggToast(
+    alreadyUnlocked ? title : `Easter Egg ${state.easterEggs.unlocked.size}/${EASTER_EGG_TOTAL}: ${title}`,
+    detail,
+  );
+}
+
+function clearEffectLayer() {
+  refs.effectLayer.innerHTML = '';
+}
+
+function showEggToast(title, detail) {
+  const toast = document.createElement('div');
+  toast.className = 'egg-toast';
+  toast.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span>`;
+  refs.effectLayer.appendChild(toast);
+  window.setTimeout(() => toast.remove(), 3400);
+}
+
+function closeEggDialog() {
+  refs.eggOverlay.classList.add('hidden');
+  refs.eggOverlay.innerHTML = '';
+}
+
+function showEggDialog(title, bodyHtml, actionsHtml = '<button class="button primary egg-close" type="button">OK</button>') {
+  refs.eggOverlay.classList.remove('hidden');
+  refs.eggOverlay.innerHTML = `
+    <div class="window dialog egg-special-window">
+      <div class="title-bar">
+        <div class="title-bar-text">${escapeHtml(title)}</div>
+        <div class="title-bar-controls"><button class="egg-close" aria-label="Close"></button></div>
+      </div>
+      <div class="window-body egg-window-body">
+        <div class="egg-window-copy">${bodyHtml}</div>
+        <div class="egg-actions">${actionsHtml}</div>
+      </div>
+    </div>
+  `;
+  refs.eggOverlay.querySelectorAll('.egg-close').forEach((button) => {
+    button.addEventListener('click', closeEggDialog);
+  });
+}
+
+function setThemeFlags() {
+  document.body.classList.toggle('egg-theme-matrix', state.easterEggs.matrixMode);
+  document.body.classList.toggle('egg-theme-plus', state.easterEggs.plusMode);
+}
+
+function activateMatrixMode() {
+  state.easterEggs.matrixMode = !state.easterEggs.matrixMode;
+  setThemeFlags();
+  unlockEgg('matrix-mode', 'Matrix mode', state.easterEggs.matrixMode ? 'Phosphor theme enabled.' : 'Phosphor theme disabled.');
+  setStatus(state.easterEggs.matrixMode ? 'Matrix mode engaged.' : 'Matrix mode disengaged.');
+}
+
+function activatePlusMode() {
+  state.easterEggs.plusMode = !state.easterEggs.plusMode;
+  setThemeFlags();
+  unlockEgg('konami-plus', 'Plus! Pack mode', state.easterEggs.plusMode ? 'Desktop palette switched to Plus! colors.' : 'Plus! colors returned to normal.');
+}
+
+function triggerEnvelopeRain() {
+  unlockEgg('mail-rain', 'Mail rain', 'The desktop is shedding envelopes.');
+  clearEffectLayer();
+  for (let index = 0; index < 18; index += 1) {
+    const envelope = document.createElement('div');
+    envelope.className = 'egg-envelope';
+    envelope.style.left = `${Math.random() * 96}%`;
+    envelope.style.setProperty('--rotation', `${-16 + Math.random() * 32}deg`);
+    envelope.style.setProperty('--duration', `${3.2 + Math.random() * 2.1}s`);
+    envelope.style.animationDelay = `${Math.random() * 0.6}s`;
+    refs.effectLayer.appendChild(envelope);
+    window.setTimeout(() => envelope.remove(), 6200);
+  }
+}
+
+function triggerPipeDream() {
+  unlockEgg('pipe-dream', 'Pipe dream', 'A miniature screen saver has drifted across the desk.');
+  clearEffectLayer();
+  const overlay = document.createElement('div');
+  overlay.className = 'pipes-overlay';
+  refs.effectLayer.appendChild(overlay);
+  const colors = ['#9fc6ff', '#72d4d4', '#ffd07a', '#ff9eb7'];
+  for (let index = 0; index < 10; index += 1) {
+    const pipe = document.createElement('div');
+    pipe.className = 'pipe-segment';
+    pipe.style.left = `${Math.random() * 80}%`;
+    pipe.style.top = `${Math.random() * 80}%`;
+    pipe.style.setProperty('--width', `${90 + Math.random() * 180}px`);
+    pipe.style.setProperty('--height', `${14 + Math.random() * 20}px`);
+    pipe.style.setProperty('--pipe-color', colors[index % colors.length]);
+    pipe.style.setProperty('--duration', `${4.6 + Math.random() * 3.2}s`);
+    pipe.style.setProperty('--rotate', `${[0, 90][index % 2]}deg`);
+    pipe.style.setProperty('--from-x', '0px');
+    pipe.style.setProperty('--from-y', '0px');
+    pipe.style.setProperty('--to-x', `${-180 + Math.random() * 360}px`);
+    pipe.style.setProperty('--to-y', `${-180 + Math.random() * 360}px`);
+    overlay.appendChild(pipe);
+  }
+  window.setTimeout(() => overlay.remove(), 8200);
+}
+
+function triggerBlueScreen() {
+  unlockEgg('blue-screen', 'Blue screen', 'Kernel panic theatrics activated.');
+  refs.eggOverlay.classList.remove('hidden');
+  refs.eggOverlay.innerHTML = `
+    <div class="bsod-screen" tabindex="0">
+      <strong>Windows</strong>
+      <div>A fatal exception 0E has occurred at 0028:C0011E36 in VXD MAILROUTER(01) + 00000D86.</div>
+      <div>The current application will be terminated.</div>
+      <br>
+      <div>* Press any key to return to the mail console.</div>
+      <div>* If this is the first time you have seen this stop error screen, congratulations, you found an easter egg.</div>
+    </div>
+  `;
+  const close = () => {
+    document.removeEventListener('keydown', onKeydown);
+    closeEggDialog();
+  };
+  const onKeydown = () => close();
+  document.addEventListener('keydown', onKeydown, { once: true });
+  refs.eggOverlay.querySelector('.bsod-screen').addEventListener('click', close);
+  refs.eggOverlay.querySelector('.bsod-screen').focus();
+}
+
+function showWinverDialog() {
+  unlockEgg('winver-dialog', 'Winver', 'Version information unlocked.');
+  showEggDialog(
+    'About EmailRouter by e075',
+    `
+      <p>EmailRouter by e075<br>Version 2.0.0.2000</p>
+      <p>Alias Forge 2000 shell with forwarding, inboxing, and hidden operator toys.</p>
+      <p>Secrets discovered: ${state.easterEggs.unlocked.size} / ${EASTER_EGG_TOTAL}</p>
+    `,
+  );
+}
+
+function showClippyDialog() {
+  unlockEgg('clippy-visit', 'Office assistant', 'A support mascot left a note.');
+  const notes = [
+    'It looks like you are routing mail. Would you like help hiding ten easter eggs?',
+    'Tip: double-clicking old software usually reveals a secret.',
+    'Remember: forward everything except your dignity.',
+  ];
+  const note = notes[Math.floor(Math.random() * notes.length)];
+  showEggDialog(
+    'Message from Office Assistant',
+    `<p>${escapeHtml(note)}</p><p>The assistant recommends clicking suspicious UI chrome from time to time.</p>`,
+  );
+}
+
+function showTaskManagerDialog() {
+  unlockEgg('task-manager', 'Task manager', 'Control sequence accepted.');
+  showEggDialog(
+    'Close Program',
+    `
+      <p>One hidden console process is currently running in the background.</p>
+      <table class="task-list">
+        <thead><tr><th>Task</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>MAILROUTER.EXE</td><td>Running</td></tr>
+          <tr><td>SECRETSAUCE.DLL</td><td>Idle</td></tr>
+          <tr><td>CLIPPY32.EXE</td><td>Waiting for applause</td></tr>
+        </tbody>
+      </table>
+    `,
+    '<button class="button egg-close" type="button">Return</button><button class="button primary egg-end-task" type="button">End Clippy32.exe</button>',
+  );
+  const endTask = refs.eggOverlay.querySelector('.egg-end-task');
+  if (endTask) {
+    endTask.addEventListener('click', () => {
+      showEggToast('Task ended', 'Clippy32.exe respawned immediately.');
+      closeEggDialog();
+    });
+  }
+}
+
+function showTimeWarpDialog() {
+  unlockEgg('time-warp', 'Time warp', 'The shell briefly forgot which decade it is.');
+  refs.shellWindow.classList.add('egg-shake');
+  window.setTimeout(() => refs.shellWindow.classList.remove('egg-shake'), 1000);
+  showEggDialog(
+    'Clock Skew Detected',
+    `<p>The system briefly reported ${(new Date()).getFullYear() - 26} before snapping back to the present.</p><p>Nothing else was affected, aside from your sense of continuity.</p>`,
+  );
+}
+
+function createMinesweeperBoard() {
+  const mines = new Set([1, 6, 12]);
+  return Array.from({ length: 16 }, (_, index) => ({
+    index,
+    mine: mines.has(index),
+    revealed: false,
+  }));
+}
+
+function getNeighborIndexes(index) {
+  const row = Math.floor(index / 4);
+  const column = index % 4;
+  const neighbors = [];
+  for (let y = -1; y <= 1; y += 1) {
+    for (let x = -1; x <= 1; x += 1) {
+      if (!x && !y) continue;
+      const nextRow = row + y;
+      const nextColumn = column + x;
+      if (nextRow < 0 || nextRow > 3 || nextColumn < 0 || nextColumn > 3) continue;
+      neighbors.push(nextRow * 4 + nextColumn);
+    }
+  }
+  return neighbors;
+}
+
+function countNeighborMines(index) {
+  return getNeighborIndexes(index)
+    .filter((neighbor) => state.easterEggs.minesweeper[neighbor].mine)
+    .length;
+}
+
+function renderMinesweeperDialog(message = 'Clear every safe square without detonating the desk.') {
+  const board = state.easterEggs.minesweeper || createMinesweeperBoard();
+  state.easterEggs.minesweeper = board;
+  const boardHtml = board.map((cell) => {
+    let label = '';
+    if (cell.revealed && cell.mine) label = '*';
+    else if (cell.revealed) label = countNeighborMines(cell.index) || '';
+    return `
+      <button
+        class="button mine-cell ${cell.revealed ? 'revealed' : ''}"
+        type="button"
+        data-mine-index="${cell.index}"
+        ${cell.revealed ? 'disabled' : ''}
+      >${label}</button>
+    `;
+  }).join('');
+
+  showEggDialog(
+    'Minesweeper',
+    `<p>${escapeHtml(message)}</p><div class="mines-grid">${boardHtml}</div>`,
+    '<button class="button egg-restart-mines" type="button">Restart</button><button class="button primary egg-close" type="button">Close</button>',
+  );
+
+  refs.eggOverlay.querySelectorAll('[data-mine-index]').forEach((button) => {
+    button.addEventListener('click', () => revealMineCell(Number(button.dataset.mineIndex)));
+  });
+  const restart = refs.eggOverlay.querySelector('.egg-restart-mines');
+  if (restart) {
+    restart.addEventListener('click', () => {
+      state.easterEggs.minesweeper = createMinesweeperBoard();
+      renderMinesweeperDialog('Fresh field deployed.');
+    });
+  }
+}
+
+function revealMineCell(index) {
+  const cell = state.easterEggs.minesweeper[index];
+  if (!cell || cell.revealed) return;
+  cell.revealed = true;
+  if (cell.mine) {
+    state.easterEggs.minesweeper = createMinesweeperBoard();
+    renderMinesweeperDialog('Mine hit. Fortunately this is the fake version.');
+    return;
+  }
+  const safeCells = state.easterEggs.minesweeper.filter((item) => !item.mine && item.revealed).length;
+  if (safeCells === 13) {
+    showEggToast('Minesweeper cleared', 'Every safe square is open.');
+    renderMinesweeperDialog('Board cleared. The desktop salutes you.');
+    return;
+  }
+  renderMinesweeperDialog('Clear every safe square without detonating the desk.');
+}
+
+function handleSearchCommand(rawValue) {
+  const command = String(rawValue || '').trim().toLowerCase();
+  if (!command) return false;
+  if (command === 'winver') {
+    showWinverDialog();
+    return true;
+  }
+  if (command === 'matrix') {
+    activateMatrixMode();
+    return true;
+  }
+  if (command === 'pipes') {
+    triggerPipeDream();
+    return true;
+  }
+  if (command === 'bluescreen' || command === 'bsod') {
+    triggerBlueScreen();
+    return true;
+  }
+  return false;
+}
+
+function trackTimedSequence(storeKey, expectedSequence, nextValue, onMatch) {
+  const now = Date.now();
+  const trail = state.easterEggs[storeKey].filter((entry) => now - entry.timestamp < 5500);
+  trail.push({ value: nextValue, timestamp: now });
+  state.easterEggs[storeKey] = trail.slice(-expectedSequence.length);
+  const values = state.easterEggs[storeKey].map((entry) => entry.value);
+  if (values.length === expectedSequence.length && values.every((value, index) => value === expectedSequence[index])) {
+    state.easterEggs[storeKey] = [];
+    onMatch();
+  }
+}
 
 function escapeHtml(value) {
   return String(value || '')
@@ -1185,6 +1539,65 @@ function showError(error) {
   refs.statusMessage.textContent = error.message || 'An unexpected error occurred.';
 }
 
+function bindEasterEggs() {
+  refs.windowTitle.addEventListener('dblclick', () => {
+    showClippyDialog();
+  });
+
+  refs.windowTitle.addEventListener('click', () => {
+    const now = Date.now();
+    state.easterEggs.titleClicks = state.easterEggs.titleClicks.filter((timestamp) => now - timestamp < 2200);
+    state.easterEggs.titleClicks.push(now);
+    if (state.easterEggs.titleClicks.length >= 5) {
+      state.easterEggs.titleClicks = [];
+      triggerEnvelopeRain();
+    }
+  });
+
+  refs.statusFolder.addEventListener('click', () => {
+    const now = Date.now();
+    state.easterEggs.folderClicks = state.easterEggs.folderClicks.filter((timestamp) => now - timestamp < 1200);
+    state.easterEggs.folderClicks.push(now);
+    if (state.easterEggs.folderClicks.length >= 3) {
+      state.easterEggs.folderClicks = [];
+      unlockEgg('minesweeper', 'Minesweeper', 'A tiny minefield appeared in the status bar.');
+      state.easterEggs.minesweeper = createMinesweeperBoard();
+      renderMinesweeperDialog();
+    }
+  });
+
+  refs.menuItems.forEach((item) => {
+    item.addEventListener('click', () => {
+      item.classList.add('menu-active');
+      window.setTimeout(() => item.classList.remove('menu-active'), 220);
+      trackTimedSequence('menuTrail', MENU_SECRET_SEQUENCE, item.dataset.menu, showTimeWarpDialog);
+      setStatus(`${item.dataset.menu} menu is decorative, but listening.`);
+    });
+  });
+
+  refs.windowControls.forEach((button) => {
+    button.addEventListener('click', () => {
+      trackTimedSequence('controlTrail', WINDOW_CONTROL_SEQUENCE, button.dataset.windowControl, showTaskManagerDialog);
+      setStatus('Window controls are decorative in browser mode.');
+    });
+  });
+
+  document.addEventListener('keydown', (event) => {
+    const target = event.target;
+    if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
+      return;
+    }
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    state.easterEggs.konamiTrail.push(key);
+    state.easterEggs.konamiTrail = state.easterEggs.konamiTrail.slice(-KONAMI_SEQUENCE.length);
+    if (state.easterEggs.konamiTrail.length === KONAMI_SEQUENCE.length
+      && state.easterEggs.konamiTrail.every((value, index) => value === KONAMI_SEQUENCE[index])) {
+      state.easterEggs.konamiTrail = [];
+      activatePlusMode();
+    }
+  });
+}
+
 async function refreshCurrentView() {
   await refreshBootstrap();
   await loadZones();
@@ -1217,14 +1630,21 @@ function bindGlobalActions() {
   document.getElementById('trashButton').addEventListener('click', () => handleThreadAction('trash').catch(showError));
   document.getElementById('refreshButton').addEventListener('click', () => refreshCurrentView().catch(showError));
   refs.searchBox.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && handleSearchCommand(refs.searchBox.value)) {
+      event.preventDefault();
+      refs.searchBox.value = '';
+      return;
+    }
     if (event.key === 'Enter' && state.view === 'mail') {
       loadThreads().catch(showError);
     }
   });
+  bindEasterEggs();
 }
 
 async function boot() {
   bindGlobalActions();
+  setThemeFlags();
   state.runtime = await fetch('/api/runtime-config').then((response) => response.json());
   refs.loginMessage.textContent = 'Ready for Google sign-in.';
   await initFirebase();
