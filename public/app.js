@@ -927,7 +927,11 @@ function scheduleDraftSave() {
 
 async function uploadAttachments(fileList) {
   const files = Array.from(fileList || []);
-  if (!files.length) return;
+  if (!files.length || !state.compose) return;
+  const form = document.getElementById('composeForm');
+  if (form) {
+    await syncComposeFromForm(form);
+  }
   for (const file of files) {
     const formData = new FormData();
     formData.append('file', file);
