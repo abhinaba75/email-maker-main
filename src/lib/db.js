@@ -12,6 +12,13 @@ const JSON_FIELDS = {
 
 let schemaPromise;
 
+function splitSqlStatements(sql) {
+  return String(sql || '')
+    .split(/;\s*(?:\r?\n|$)/)
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
 function parseJson(value, fallback = null) {
   if (value == null || value === '') return fallback;
   if (typeof value !== 'string') return value;
@@ -48,7 +55,19 @@ async function all(stmt) {
 
 export function ensureSchema(db) {
   if (!schemaPromise) {
-    schemaPromise = db.exec(SCHEMA_SQL);
+    schemaPromise = (async () => {
+      const existingUsersTable = await first(
+        db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users' LIMIT 1`),
+      );
+      if (existingUsersTable) return;
+
+      for (const statement of splitSqlStatements(SCHEMA_SQL)) {
+        await db.prepare(statement).run();
+      }
+    })().catch((error) => {
+      schemaPromise = undefined;
+      throw error;
+    });
   }
   return schemaPromise;
 }

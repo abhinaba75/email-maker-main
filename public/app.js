@@ -136,50 +136,57 @@ async function api(path, options = {}) {
 
 async function initFirebase() {
   const config = state.runtime.firebase;
+  refs.bootScreen.classList.add('hidden');
+  refs.loginOverlay.classList.remove('hidden');
+  refs.appShell.classList.add('hidden');
+
   if (!config.apiKey || !config.projectId) {
     refs.loginMessage.textContent = 'Firebase runtime configuration is incomplete.';
     return;
   }
 
-  const [{ initializeApp }, authModule] = await Promise.all([
-    import('https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js'),
-    import('https://www.gstatic.com/firebasejs/10.9.0/firebase-auth.js'),
-  ]);
+  try {
+    const [{ initializeApp }, authModule] = await Promise.all([
+      import('https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js'),
+      import('https://www.gstatic.com/firebasejs/10.9.0/firebase-auth.js'),
+    ]);
 
-  const app = initializeApp(config);
-  const auth = authModule.getAuth(app);
-  const provider = new authModule.GoogleAuthProvider();
+    const app = initializeApp(config);
+    const auth = authModule.getAuth(app);
+    const provider = new authModule.GoogleAuthProvider();
 
-  state.firebase = { authModule, provider };
-  state.auth = auth;
+    state.firebase = { authModule, provider };
+    state.auth = auth;
 
-  refs.googleLoginButton.addEventListener('click', async () => {
-    try {
-      refs.loginMessage.textContent = 'Opening Google sign-in...';
-      await authModule.signInWithPopup(auth, provider);
-    } catch (error) {
-      refs.loginMessage.textContent = error.message;
-    }
-  });
+    refs.googleLoginButton.addEventListener('click', async () => {
+      try {
+        refs.loginMessage.textContent = 'Opening Google sign-in...';
+        await authModule.signInWithPopup(auth, provider);
+      } catch (error) {
+        refs.loginMessage.textContent = error.message;
+      }
+    });
 
-  authModule.onAuthStateChanged(auth, async (user) => {
-    if (!user) {
-      state.user = null;
-      state.token = '';
-      refs.loginOverlay.classList.remove('hidden');
-      refs.appShell.classList.add('hidden');
-      refs.bootScreen.classList.add('hidden');
-      refs.loginMessage.textContent = 'Sign in to continue.';
-      return;
-    }
+    authModule.onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        state.user = null;
+        state.token = '';
+        refs.loginOverlay.classList.remove('hidden');
+        refs.appShell.classList.add('hidden');
+        refs.loginMessage.textContent = 'Sign in to continue.';
+        return;
+      }
 
-    state.token = await user.getIdToken();
-    refs.loginOverlay.classList.add('hidden');
-    refs.appShell.classList.remove('hidden');
-    refs.bootScreen.classList.add('hidden');
-    await refreshBootstrap();
-    await loadZones();
-  });
+      state.token = await user.getIdToken();
+      refs.loginOverlay.classList.add('hidden');
+      refs.appShell.classList.remove('hidden');
+      await refreshBootstrap();
+      await loadZones();
+    });
+  } catch (error) {
+    console.error(error);
+    refs.loginMessage.textContent = `Google sign-in failed to initialize: ${error.message || 'unknown error'}`;
+  }
 }
 
 async function refreshBootstrap() {
