@@ -353,12 +353,16 @@ function renderSidebar() {
 }
 
 function renderMailView() {
+  const mailboxFilter = state.mailboxId ? getMailboxById(state.mailboxId) : null;
+  const emptyMessage = state.data.domains.length
+    ? `No messages in ${mailboxFilter?.email_address || 'your inbox'} yet. Incoming mail will appear here after the alias route processes a message.`
+    : 'Add a domain, mailbox, and alias rule to start receiving mail in the console.';
   refs.contentView.innerHTML = `
     <div class="mail-layout">
       <section class="split-panel">
         <div class="mail-list-head">
           <span>${escapeHtml(state.folder.replace(/^\w/, (x) => x.toUpperCase()))}</span>
-          <span class="muted">${state.threads.length} thread(s)</span>
+          <span class="muted">${escapeHtml(mailboxFilter?.email_address || 'All mailboxes')} • ${state.threads.length} thread(s)</span>
         </div>
         <div class="list-grid">
           ${state.threads.length ? state.threads.map((thread) => `
@@ -370,7 +374,7 @@ function renderMailView() {
               </div>
               <div>${escapeHtml(formatDateTime(thread.latest_message_at))}</div>
             </div>
-          `).join('') : `<div class="surface"><span class="muted">No mail in this folder.</span></div>`}
+          `).join('') : `<div class="surface"><span class="muted">${escapeHtml(emptyMessage)}</span></div>`}
         </div>
       </section>
 
@@ -948,7 +952,23 @@ function renderCompose() {
 function render() {
   renderContent();
   renderCompose();
+  updateToolbarState();
   refs.statusMessage.textContent = state.status;
+}
+
+function updateToolbarState() {
+  const selectedThread = state.selectedThread;
+  const canCompose = Boolean(getDefaultMailbox());
+  const canReply = Boolean(selectedThread)
+    && canCompose
+    && getDomainSendCapability(selectedThread.domain_id) === 'send_enabled';
+  const canForward = Boolean(selectedThread) && canCompose;
+
+  document.getElementById('newMessageButton').disabled = !canCompose;
+  document.getElementById('replyButton').disabled = !canReply;
+  document.getElementById('forwardButton').disabled = !canForward;
+  document.getElementById('archiveButton').disabled = !selectedThread;
+  document.getElementById('trashButton').disabled = !selectedThread;
 }
 
 function parseInlineAddressList(text) {

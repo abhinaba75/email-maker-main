@@ -9,7 +9,7 @@ import {
   deleteDraft,
   ensureSchema,
   getAliasRule,
-  getAliasRuleByIngress,
+  getAliasRuleByRecipient,
   getAttachment,
   getConnection,
   getDomain,
@@ -36,8 +36,6 @@ import {
 import { apiError, json, maybeReadJson, parseUrl, readJson } from './lib/http.js';
 import { decryptText, encryptText, maskSecret } from './lib/crypto.js';
 import {
-  buildCloudflareTargets,
-  buildIngressAddress,
   createId,
   normalizeDeliveryMode,
   normalizeFolder,
@@ -62,6 +60,8 @@ import {
   verifyResendApiKey,
 } from './lib/providers/resend.js';
 import { deriveSendingDomainPlan, isVerifiedResendDomain, SEND_CAPABILITY } from './lib/sending.js';
+
+const EMAIL_WORKER_DESTINATION = 'alias-forge-2000';
 
 function buildRuntimeConfig(env) {
   return {
@@ -108,6 +108,59 @@ function requireEncryptionKey(env) {
 
 function parsePath(url) {
   return url.pathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+}
+
+function buildWorkerRulePayload(domain, { isCatchAll, localPart, enabled }) {
+  return {
+    name: isCatchAll ? `catch-all ${domain.hostname}` : `${localPart}@${domain.hostname}`,
+    enabled,
+    priority: isCatchAll ? 0 : Date.now() % 100000,
+    matchers: isCatchAll
+      ? [{ type: 'all' }]
+      : [{ type: 'literal', field: 'to', value: `${localPart}@${domain.hostname}` }],
+    actions: [{ type: 'worker', value: [EMAIL_WORKER_DESTINATION] }],
+  };
+}
+
+async function reconcileAliasRoutes(db, env, userId) {
+  const cf = await loadSecret(db, env, userId, 'cloudflare');
+  if (!cf) return;
+
+  const [domains, aliases] = await Promise.all([
+    listDomains(db, userId),
+    listAliasRules(db, userId),
+  ]);
+  const domainsById = new Map(domains.map((domain) => [domain.id, domain]));
+
+  for (const alias of aliases) {
+    const domain = domainsById.get(alias.domain_id);
+    if (!domain) continue;
+
+    try {
+      const payload = buildWorkerRulePayload(domain, {
+        isCatchAll: Boolean(alias.is_catch_all),
+        localPart: alias.local_part,
+        enabled: Boolean(alias.enabled),
+      });
+      if (alias.is_catch_all) {
+        await updateCatchAllRule(cf.secret, domain.zone_id, payload);
+      } else {
+        const cloudflareRule = await upsertRoutingRule(cf.secret, domain.zone_id, alias.cloudflare_rule_id, payload);
+        const nextRuleId = cloudflareRule.id || cloudflareRule.tag || alias.cloudflare_rule_id || null;
+        if (nextRuleId !== alias.cloudflare_rule_id) {
+          await updateAliasRule(db, userId, alias.id, {
+            cloudflareRuleId: nextRuleId,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('alias_route_reconcile_failed', {
+        aliasId: alias.id,
+        domainId: alias.domain_id,
+        message: error.message,
+      });
+    }
+  }
 }
 
 async function reconcileSendingDomainState(db, env, userId, options = {}) {
@@ -185,6 +238,7 @@ async function getAuthenticatedContext(request, env) {
 }
 
 async function bootstrapData(db, env, userId) {
+  await reconcileAliasRoutes(db, env, userId);
   const [connections, reconciliation, mailboxes, forwardDestinations, aliases, drafts] = await Promise.all([
     listConnections(db, userId),
     reconcileSendingDomainState(db, env, userId),
@@ -247,6 +301,7 @@ async function handleCloudflareConnection(request, env, user) {
       accounts: [...new Set(zones.map((zone) => zone.account?.name).filter(Boolean))],
     },
   );
+  await reconcileAliasRoutes(env.DB, env, user.id);
   return json({ connection, zones });
 }
 
@@ -279,6 +334,7 @@ async function handleResendConnection(request, env, user) {
     },
     resendDomains: domains?.data || [],
   });
+  await reconcileAliasRoutes(env.DB, env, user.id);
   return json({
     connection,
     sendingDomainId: reconciliation.sendingDomainId,
@@ -464,6 +520,7 @@ async function handleAliases(request, env, user, pathParts) {
     if (!domain) return apiError(404, 'Domain not found');
 
     const mode = normalizeDeliveryMode(body.mode);
+    const localPart = body.isCatchAll ? null : slugifyLocalPart(body.localPart);
     const mailbox = body.mailboxId ? await getMailbox(env.DB, user.id, body.mailboxId) : null;
     const forwardDestinationRows = (await listForwardDestinations(env.DB, user.id)).filter((item) =>
       (body.forwardDestinationIds || []).includes(item.id),
@@ -471,33 +528,17 @@ async function handleAliases(request, env, user, pathParts) {
     if (mode !== 'forward_only' && !mailbox) {
       return apiError(400, 'A mailbox is required for inbox delivery');
     }
+    if ((mode === 'forward_only' || mode === 'inbox_and_forward')
+      && !forwardDestinationRows.some((item) => item.verification_state === 'verified')) {
+      return apiError(400, 'Forwarding requires at least one verified destination address.');
+    }
 
     const aliasId = createId('alr_');
-    const ingressAddress = buildIngressAddress(aliasId, env.INGEST_DOMAIN);
-    if (mode !== 'forward_only') {
-      await ensureDestinationAddress(cf.secret, domain.account_id, ingressAddress);
-    }
-    const targets = buildCloudflareTargets({
-      mode,
-      ingressAddress,
-      forwardAddresses: forwardDestinationRows.map((item) => item.email),
+    const payload = buildWorkerRulePayload(domain, {
+      isCatchAll: Boolean(body.isCatchAll),
+      localPart,
+      enabled: true,
     });
-    if (!targets.length) return apiError(400, 'At least one delivery target is required');
-
-    const payload = body.isCatchAll
-      ? {
-          name: `catch-all ${domain.hostname}`,
-          enabled: true,
-          matchers: [{ type: 'all' }],
-          actions: [{ type: 'forward', value: targets }],
-        }
-      : {
-          name: `${body.localPart}@${domain.hostname}`,
-          enabled: true,
-          priority: Date.now() % 100000,
-          matchers: [{ type: 'literal', field: 'to', value: `${slugifyLocalPart(body.localPart)}@${domain.hostname}` }],
-          actions: [{ type: 'forward', value: targets }],
-        };
 
     const cloudflareRule = body.isCatchAll
       ? await updateCatchAllRule(cf.secret, domain.zone_id, payload)
@@ -508,10 +549,10 @@ async function handleAliases(request, env, user, pathParts) {
       userId: user.id,
       domainId: domain.id,
       mailboxId: mailbox?.id || null,
-      localPart: body.isCatchAll ? null : slugifyLocalPart(body.localPart),
+      localPart,
       isCatchAll: Boolean(body.isCatchAll),
       mode,
-      ingressAddress,
+      ingressAddress: body.isCatchAll ? `*@${domain.hostname}` : `${localPart}@${domain.hostname}`,
       forwardDestinationIds: forwardDestinationRows.map((item) => item.id),
       cloudflareRuleId: cloudflareRule.id || cloudflareRule.tag || null,
       enabled: true,
@@ -538,25 +579,16 @@ async function handleAliases(request, env, user, pathParts) {
       (body.forwardDestinationIds || existing.forward_destination_json || []).includes(item.id),
     );
     const mode = normalizeDeliveryMode(body.mode || existing.mode);
-    const targets = buildCloudflareTargets({
-      mode,
-      ingressAddress: existing.ingress_address,
-      forwardAddresses: forwardDestinationRows.map((item) => item.email),
+    const nextLocalPart = existing.is_catch_all ? null : slugifyLocalPart(body.localPart || existing.local_part);
+    if ((mode === 'forward_only' || mode === 'inbox_and_forward')
+      && !forwardDestinationRows.some((item) => item.verification_state === 'verified')) {
+      return apiError(400, 'Forwarding requires at least one verified destination address.');
+    }
+    const payload = buildWorkerRulePayload(domain, {
+      isCatchAll: Boolean(existing.is_catch_all),
+      localPart: nextLocalPart,
+      enabled: body.enabled !== false,
     });
-    const payload = existing.is_catch_all
-      ? {
-          name: `catch-all ${domain.hostname}`,
-          enabled: body.enabled !== false,
-          matchers: [{ type: 'all' }],
-          actions: [{ type: 'forward', value: targets }],
-        }
-      : {
-          name: `${body.localPart || existing.local_part}@${domain.hostname}`,
-          enabled: body.enabled !== false,
-          priority: Date.now() % 100000,
-          matchers: [{ type: 'literal', field: 'to', value: `${slugifyLocalPart(body.localPart || existing.local_part)}@${domain.hostname}` }],
-          actions: [{ type: 'forward', value: targets }],
-        };
     let cloudflareRule = null;
     if (existing.is_catch_all) {
       cloudflareRule = await updateCatchAllRule(cf.secret, domain.zone_id, payload);
@@ -565,8 +597,9 @@ async function handleAliases(request, env, user, pathParts) {
     }
     const alias = await updateAliasRule(env.DB, user.id, existing.id, {
       mailboxId: mailbox?.id || null,
-      localPart: existing.is_catch_all ? null : slugifyLocalPart(body.localPart || existing.local_part),
+      localPart: nextLocalPart,
       mode,
+      ingressAddress: existing.is_catch_all ? `*@${domain.hostname}` : `${nextLocalPart}@${domain.hostname}`,
       forwardDestinationIds: forwardDestinationRows.map((item) => item.id),
       cloudflareRuleId: cloudflareRule.id || cloudflareRule.tag || existing.cloudflare_rule_id,
       enabled: body.enabled !== false,
@@ -854,14 +887,19 @@ async function queueIngest(payload, env) {
   if (!object) return;
   const parser = new PostalMime();
   const parsed = await parser.parse(await object.arrayBuffer());
-  const aliasRule = await getAliasRuleByIngress(env.DB, payload.to);
-  if (!aliasRule) return;
+  const aliasMetadata = payload.userId
+    ? payload
+    : await getAliasRuleByRecipient(env.DB, payload.to);
+  if (!aliasMetadata) {
+    console.warn('queue_alias_not_found', { to: payload.to, rawKey: payload.rawKey });
+    return;
+  }
 
   const textBody = parsed.text || '';
   const htmlBody = parsed.html || '';
   const attachments = [];
   for (const attachment of parsed.attachments || []) {
-    const key = `attachments/${aliasRule.user_id}/${Date.now()}-${createId('att_')}-${attachment.filename || 'attachment.bin'}`;
+    const key = `attachments/${aliasMetadata.user_id || aliasMetadata.userId}/${Date.now()}-${createId('att_')}-${attachment.filename || 'attachment.bin'}`;
     await env.MAIL_BUCKET.put(key, attachment.content, {
       httpMetadata: {
         contentType: attachment.mimeType || 'application/octet-stream',
@@ -878,10 +916,10 @@ async function queueIngest(payload, env) {
   }
 
   await saveInboundMessage(env.DB, {
-    userId: aliasRule.user_id,
-    domainId: aliasRule.domain_id,
-    mailboxId: aliasRule.mailbox_id,
-    aliasRuleId: aliasRule.id,
+    userId: aliasMetadata.user_id || aliasMetadata.userId,
+    domainId: aliasMetadata.domain_id || aliasMetadata.domainId,
+    mailboxId: aliasMetadata.mailbox_id || aliasMetadata.mailboxId,
+    aliasRuleId: aliasMetadata.id || aliasMetadata.aliasRuleId,
     from: parseOneAddress(parsed.from),
     to: normalizeParsedList(parsed.to),
     cc: normalizeParsedList(parsed.cc),
@@ -980,6 +1018,33 @@ export default {
 
   async email(message, env, ctx) {
     await ensureSchema(env.DB);
+    const aliasRule = await getAliasRuleByRecipient(env.DB, message.to);
+    if (!aliasRule) {
+      console.warn('email_alias_not_found', { to: message.to });
+      return;
+    }
+
+    const forwardDestinations = aliasRule.forward_destination_json?.length
+      ? (await listForwardDestinations(env.DB, aliasRule.user_id)).filter(
+          (item) => aliasRule.forward_destination_json.includes(item.id) && item.verification_state === 'verified',
+        )
+      : [];
+
+    if (aliasRule.mode === 'forward_only' || aliasRule.mode === 'inbox_and_forward') {
+      for (const destination of forwardDestinations) {
+        await message.forward(destination.email);
+      }
+    }
+
+    if (aliasRule.mode === 'forward_only') {
+      console.log('email_forward_only_processed', {
+        aliasRuleId: aliasRule.id,
+        to: message.to,
+        forwards: forwardDestinations.map((item) => item.email),
+      });
+      return;
+    }
+
     const rawKey = `raw/${Date.now()}-${createId('raw_')}.eml`;
     const raw = await new Response(message.raw).arrayBuffer();
     await env.MAIL_BUCKET.put(rawKey, raw, {
@@ -988,6 +1053,10 @@ export default {
       },
     });
     const payload = {
+      aliasRuleId: aliasRule.id,
+      userId: aliasRule.user_id,
+      domainId: aliasRule.domain_id,
+      mailboxId: aliasRule.mailbox_id,
       to: message.to,
       from: message.from,
       rawKey,

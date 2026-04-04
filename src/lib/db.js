@@ -35,6 +35,18 @@ function serializeJson(value) {
   return JSON.stringify(value ?? []);
 }
 
+function parseRecipientAddress(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  const atIndex = normalized.lastIndexOf('@');
+  if (atIndex <= 0 || atIndex === normalized.length - 1) {
+    return null;
+  }
+  return {
+    localPart: normalized.slice(0, atIndex),
+    hostname: normalized.slice(atIndex + 1),
+  };
+}
+
 function normalizeSendCapability(value) {
   return SEND_CAPABILITIES.has(value) ? value : 'send_unavailable';
 }
@@ -425,6 +437,41 @@ export async function getAliasRuleByIngress(db, ingressAddress) {
     ).bind(ingressAddress),
   );
   return row ? mapRow('alias_rules', row) : null;
+}
+
+export async function getAliasRuleByRecipient(db, recipientAddress) {
+  const parts = parseRecipientAddress(recipientAddress);
+  if (!parts) return null;
+
+  const explicit = await first(
+    db.prepare(
+      `SELECT a.*, d.hostname, d.user_id, m.email_address AS mailbox_email, m.display_name AS mailbox_display_name
+       FROM alias_rules a
+       JOIN domains d ON d.id = a.domain_id
+       LEFT JOIN mailboxes m ON m.id = a.mailbox_id
+       WHERE a.enabled = 1
+         AND a.is_catch_all = 0
+         AND lower(d.hostname) = ?1
+         AND lower(a.local_part) = ?2
+       LIMIT 1`,
+    ).bind(parts.hostname, parts.localPart),
+  );
+  if (explicit) return mapRow('alias_rules', explicit);
+
+  const catchAll = await first(
+    db.prepare(
+      `SELECT a.*, d.hostname, d.user_id, m.email_address AS mailbox_email, m.display_name AS mailbox_display_name
+       FROM alias_rules a
+       JOIN domains d ON d.id = a.domain_id
+       LEFT JOIN mailboxes m ON m.id = a.mailbox_id
+       WHERE a.enabled = 1
+         AND a.is_catch_all = 1
+         AND lower(d.hostname) = ?1
+       ORDER BY a.updated_at DESC
+       LIMIT 1`,
+    ).bind(parts.hostname),
+  );
+  return catchAll ? mapRow('alias_rules', catchAll) : null;
 }
 
 export async function createAliasRule(db, data) {
