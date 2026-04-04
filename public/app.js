@@ -852,7 +852,10 @@ function renderCompose() {
       setStatus('Sending message...');
       await api('/api/send', {
         method: 'POST',
-        body: JSON.stringify(state.compose.id ? { draftId: state.compose.id } : state.compose),
+        body: JSON.stringify({
+          ...state.compose,
+          draftId: state.compose.id || null,
+        }),
       });
       closeCompose();
       await refreshBootstrap();

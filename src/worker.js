@@ -653,7 +653,8 @@ async function handleSend(request, env, user) {
   const resend = await loadSecret(env.DB, env, user.id, 'resend');
   if (!resend) return apiError(400, 'Connect Resend first');
   const body = await readJson(request);
-  const draft = body.draftId ? await getDraft(env.DB, user.id, body.draftId) : null;
+  const draftId = body.draftId || body.id || null;
+  const draft = draftId ? await getDraft(env.DB, user.id, draftId) : null;
   const payload = draft
     ? {
         domainId: draft.domain_id,
@@ -667,6 +668,7 @@ async function handleSend(request, env, user) {
         textBody: draft.text_body,
         htmlBody: draft.html_body,
         attachments: draft.attachment_json || [],
+        ...body,
       }
     : body;
 
@@ -674,12 +676,18 @@ async function handleSend(request, env, user) {
   if (!mailbox) return apiError(404, 'Mailbox not found');
   const domain = await getDomain(env.DB, user.id, payload.domainId || mailbox.domain_id);
   if (!domain) return apiError(404, 'Domain not found');
+  const to = parseAddressList(payload.to || []);
+  const cc = parseAddressList(payload.cc || []);
+  const bcc = parseAddressList(payload.bcc || []);
+  if (!to.length) {
+    return apiError(400, 'Add at least one valid recipient in the To field.');
+  }
   const attachments = await materializeAttachments(env, payload.attachments || []);
   const sendResult = await sendResendEmail(resend.secret, {
     from: formatSender(mailbox.display_name, mailbox.email_address),
-    to: parseAddressList(payload.to || []).map((item) => item.email),
-    cc: parseAddressList(payload.cc || []).map((item) => item.email),
-    bcc: parseAddressList(payload.bcc || []).map((item) => item.email),
+    to: to.map((item) => item.email),
+    cc: cc.map((item) => item.email),
+    bcc: bcc.map((item) => item.email),
     subject: payload.subject || '(no subject)',
     text: payload.textBody || '',
     html: payload.htmlBody || payload.textBody || '',
@@ -692,9 +700,9 @@ async function handleSend(request, env, user) {
     mailboxId: mailbox.id,
     threadId: payload.threadId || null,
     from: { email: mailbox.email_address, name: mailbox.display_name },
-    to: parseAddressList(payload.to || []),
-    cc: parseAddressList(payload.cc || []),
-    bcc: parseAddressList(payload.bcc || []),
+    to,
+    cc,
+    bcc,
     subject: payload.subject || '(no subject)',
     textBody: payload.textBody || '',
     htmlBody: payload.htmlBody || payload.textBody || '',
@@ -706,8 +714,8 @@ async function handleSend(request, env, user) {
     sentAt: Date.now(),
   });
 
-  if (body.draftId) {
-    await deleteDraft(env.DB, user.id, body.draftId);
+  if (draftId) {
+    await deleteDraft(env.DB, user.id, draftId);
   }
 
   return json({ sent: sendResult, stored });
@@ -905,4 +913,3 @@ export default {
     }
   },
 };
-
