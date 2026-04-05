@@ -37,6 +37,7 @@ import {
 } from './lib/db.js';
 import { apiError, json, maybeReadJson, parseUrl, readJson } from './lib/http.js';
 import { decryptText, encryptText, maskSecret } from './lib/crypto.js';
+import { buildAiAssistRequest, parseAiAssistResult } from './lib/ai.js';
 import {
   createId,
   normalizeDeliveryMode,
@@ -61,6 +62,17 @@ import {
   sendResendEmail,
   verifyResendApiKey,
 } from './lib/providers/resend.js';
+import {
+  DEFAULT_GEMINI_MODEL,
+  GEMINI_FREE_MODELS,
+  generateGeminiContent,
+  verifyGeminiApiKey,
+} from './lib/providers/gemini.js';
+import {
+  generateGroqChat,
+  GROQ_EMAIL_MODEL,
+  verifyGroqApiKey,
+} from './lib/providers/groq.js';
 import {
   deriveSendingDomainPlan,
   getResendDomainHostname,
@@ -402,6 +414,63 @@ async function handleResendConnection(request, env, user) {
     sendingDomainId: reconciliation.sendingDomainId,
     sendingStatusMessage: reconciliation.sendingStatusMessage,
   });
+}
+
+async function handleGeminiConnection(request, env, user) {
+  if (request.method === 'GET') {
+    const connection = await getConnection(env.DB, user.id, 'gemini');
+    return json({ connection: toConnectionSummary(connection) });
+  }
+
+  const body = await readJson(request);
+  const apiKey = String(body.apiKey || '').trim();
+  if (!apiKey) return apiError(400, 'Gemini API key is required');
+
+  const defaultModel = String(body.defaultModel || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
+  const verification = await verifyGeminiApiKey(apiKey);
+  const connection = await saveProviderConnection(
+    env.DB,
+    env,
+    user.id,
+    'gemini',
+    body.label || 'Gemini',
+    apiKey,
+    {
+      defaultModel,
+      modelCount: verification.modelCount,
+      availableModels: GEMINI_FREE_MODELS,
+      sampleModels: verification.models
+        .slice(0, 8)
+        .map((model) => model.name?.replace(/^models\//, '') || ''),
+    },
+  );
+  return json({ connection });
+}
+
+async function handleGroqConnection(request, env, user) {
+  if (request.method === 'GET') {
+    const connection = await getConnection(env.DB, user.id, 'groq');
+    return json({ connection: toConnectionSummary(connection) });
+  }
+
+  const body = await readJson(request);
+  const apiKey = String(body.apiKey || '').trim();
+  if (!apiKey) return apiError(400, 'Groq API key is required');
+
+  const verification = await verifyGroqApiKey(apiKey);
+  const connection = await saveProviderConnection(
+    env.DB,
+    env,
+    user.id,
+    'groq',
+    body.label || 'Llama',
+    apiKey,
+    {
+      model: GROQ_EMAIL_MODEL,
+      modelCount: verification?.data?.length || 0,
+    },
+  );
+  return json({ connection });
 }
 
 async function handleCloudflareZones(env, user) {
@@ -943,6 +1012,71 @@ async function handleSend(request, env, user) {
   return json({ sent: sendResult, stored });
 }
 
+async function handleAiAssist(request, env, user) {
+  const body = await readJson(request);
+  const provider = String(body.provider || '').trim().toLowerCase();
+  if (!['gemini', 'groq'].includes(provider)) {
+    return apiError(400, 'Choose Gemini or Llama for AI compose and rewrite.');
+  }
+
+  const connection = await loadSecret(env.DB, env, user.id, provider);
+  if (!connection) {
+    return apiError(
+      400,
+      provider === 'groq'
+        ? 'Connect Llama in Connections to enable Groq-powered rewrite and compose.'
+        : 'Connect Gemini in Connections to enable Gemini-powered rewrite and compose.',
+    );
+  }
+
+  const aiRequest = buildAiAssistRequest({
+    action: body.action,
+    prompt: body.prompt,
+    tone: body.tone,
+    outputMode: body.outputMode,
+    subject: body.subject,
+    textBody: body.textBody,
+    selectionText: body.selectionText,
+    to: body.to || [],
+    cc: body.cc || [],
+    bcc: body.bcc || [],
+  });
+
+  const model = provider === 'groq'
+    ? GROQ_EMAIL_MODEL
+    : String(
+        body.model
+          || connection.metadata_json?.defaultModel
+          || DEFAULT_GEMINI_MODEL,
+      ).trim() || DEFAULT_GEMINI_MODEL;
+
+  const result = provider === 'groq'
+    ? await generateGroqChat(connection.secret, {
+        systemInstruction: aiRequest.systemInstruction,
+        prompt: aiRequest.prompt,
+      })
+    : await generateGeminiContent(connection.secret, {
+        model,
+        systemInstruction: aiRequest.systemInstruction,
+        prompt: aiRequest.prompt,
+      });
+
+  return json({
+    provider,
+    action: aiRequest.action,
+    tone: aiRequest.tone,
+    useSelection: aiRequest.useSelection,
+    model,
+    result: parseAiAssistResult(result.text, {
+      useSelection: aiRequest.useSelection,
+      outputMode: aiRequest.outputMode,
+      fallbackSubject: body.subject || '',
+      fallbackText: body.textBody || '',
+      fallbackHtml: body.htmlBody || '',
+    }),
+  });
+}
+
 async function handleAttachmentDownload(env, user, attachmentId) {
   const attachment = await getAttachment(env.DB, user.id, attachmentId);
   if (!attachment) return apiError(404, 'Attachment not found');
@@ -1061,6 +1195,14 @@ export default {
         return handleResendConnection(request, env, user);
       }
 
+      if (parts[1] === 'providers' && parts[2] === 'gemini') {
+        return handleGeminiConnection(request, env, user);
+      }
+
+      if (parts[1] === 'providers' && parts[2] === 'groq') {
+        return handleGroqConnection(request, env, user);
+      }
+
       if (parts[1] === 'cloudflare' && parts[2] === 'zones' && request.method === 'GET') {
         return handleCloudflareZones(env, user);
       }
@@ -1095,6 +1237,10 @@ export default {
 
       if (parts[1] === 'send' && request.method === 'POST') {
         return handleSend(request, env, user);
+      }
+
+      if (parts[1] === 'ai' && parts[2] === 'assist' && request.method === 'POST') {
+        return handleAiAssist(request, env, user);
       }
 
       if (parts[1] === 'attachments' && parts[2] && request.method === 'GET') {
