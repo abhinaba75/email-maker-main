@@ -3,6 +3,25 @@ const KONAMI_SEQUENCE = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowL
 const MENU_SECRET_SEQUENCE = ['Help', 'Window', 'Tools', 'View', 'Edit', 'File'];
 const WINDOW_CONTROL_SEQUENCE = ['minimize', 'maximize', 'close'];
 const EASTER_EGG_TOTAL = 10;
+const AI_PROVIDER_LABELS = {
+  gemini: 'Gemini',
+  groq: 'Llama',
+};
+const GEMINI_MODEL_OPTIONS = [
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+  { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite' },
+];
+const AI_TONE_OPTIONS = [
+  { id: 'professional', label: 'Professional' },
+  { id: 'friendly', label: 'Friendly' },
+  { id: 'formal', label: 'Formal' },
+  { id: 'concise', label: 'Concise' },
+  { id: 'persuasive', label: 'Persuasive' },
+  { id: 'empathetic', label: 'Empathetic' },
+  { id: 'confident', label: 'Confident' },
+  { id: 'upbeat', label: 'Upbeat' },
+];
 
 const state = {
   runtime: null,
@@ -460,6 +479,40 @@ function getDomainById(id) {
   return state.data.domains.find((domain) => domain.id === id) || null;
 }
 
+function getConnectionByProvider(provider) {
+  return state.data.connections.find((connection) => connection.provider === provider) || null;
+}
+
+function getGeminiConnection() {
+  return getConnectionByProvider('gemini');
+}
+
+function getGroqConnection() {
+  return getConnectionByProvider('groq');
+}
+
+function getAvailableAiProviders() {
+  const providers = [];
+  if (getGeminiConnection()) providers.push('gemini');
+  if (getGroqConnection()) providers.push('groq');
+  return providers;
+}
+
+function getDefaultGeminiModel() {
+  const configuredModel = getGeminiConnection()?.metadata?.defaultModel;
+  return GEMINI_MODEL_OPTIONS.some((option) => option.id === configuredModel)
+    ? configuredModel
+    : GEMINI_MODEL_OPTIONS[0].id;
+}
+
+function getDefaultAiProvider() {
+  return getAvailableAiProviders()[0] || 'gemini';
+}
+
+function getAiProviderLabel(provider) {
+  return AI_PROVIDER_LABELS[provider] || provider;
+}
+
 function getDomainSendCapability(domainId) {
   const domain = getDomainById(domainId);
   return domain?.sendCapability || domain?.send_capability || 'send_unavailable';
@@ -530,6 +583,14 @@ function getSendingSummaryMessage() {
   }
   return state.sendingStatusMessage
     || 'Receiving works for every Cloudflare domain. Choose one provisioned domain to use for sending.';
+}
+
+function getComposeEditor() {
+  return document.getElementById('composeEditor');
+}
+
+function getComposeAiPromptInput() {
+  return document.getElementById('composeAiPrompt');
 }
 
 async function api(path, options = {}) {
@@ -797,12 +858,14 @@ function renderMailView() {
 function renderConnectionsView() {
   const cf = state.data.connections.find((item) => item.provider === 'cloudflare');
   const resend = state.data.connections.find((item) => item.provider === 'resend');
+  const gemini = getGeminiConnection();
+  const groq = getGroqConnection();
   const sendingDomain = getSendingDomain();
   refs.contentView.innerHTML = `
     <div class="stack">
       <section class="property-sheet">
         <div class="property-title">Provider Connections</div>
-        <div class="form-grid">
+        <div class="connections-grid">
           <form id="cloudflareForm" class="stack">
             <label class="label">Label<input name="label" value="${escapeHtml(cf?.label || 'Cloudflare')}"></label>
             <label class="label">API Token<input name="token" type="password" placeholder="Cloudflare API Token"></label>
@@ -815,9 +878,33 @@ function renderConnectionsView() {
             <div class="muted">Stored encrypted on the Worker. Current: ${escapeHtml(resend?.secretMask || 'Not connected')}</div>
             <button class="button primary" type="submit">Save Resend Connection</button>
           </form>
+          <form id="geminiForm" class="stack">
+            <label class="label">Label<input name="label" value="${escapeHtml(gemini?.label || 'Gemini')}"></label>
+            <label class="label">API Key<input name="apiKey" type="password" placeholder="AIza..."></label>
+            <label class="label">
+              Default Free Model
+              <select name="defaultModel">
+                ${GEMINI_MODEL_OPTIONS.map((option) => `
+                  <option value="${option.id}" ${option.id === (gemini?.metadata?.defaultModel || getDefaultGeminiModel()) ? 'selected' : ''}>
+                    ${escapeHtml(option.label)}
+                  </option>
+                `).join('')}
+              </select>
+            </label>
+            <div class="muted">Stored encrypted on the Worker. Current: ${escapeHtml(gemini?.secretMask || 'Not connected')}</div>
+            <div class="muted">Gemini is limited to free-tier email composition and rewrite models in this console.</div>
+            <button class="button primary" type="submit">Save Gemini Connection</button>
+          </form>
+          <form id="groqForm" class="stack">
+            <label class="label">Label<input name="label" value="${escapeHtml(groq?.label || 'Llama')}"></label>
+            <label class="label">API Key<input name="apiKey" type="password" placeholder="gsk_..."></label>
+            <div class="muted">Stored encrypted on the Worker. Current: ${escapeHtml(groq?.secretMask || 'Not connected')}</div>
+            <div class="muted">Llama is fixed to <code>llama-3.3-70b-versatile</code> for email composition and rewrite.</div>
+            <button class="button primary" type="submit">Save Llama Connection</button>
+          </form>
         </div>
         <div class="notice">
-          Cloudflare powers receiving, alias rules, and forwarding for every configured domain. Resend powers outbound delivery for whichever provisioned domain you explicitly mark as the sending domain.
+          Cloudflare powers receiving, alias rules, and forwarding for every configured domain. Resend powers outbound delivery for whichever provisioned domain you explicitly mark as the sending domain. Gemini and Llama are constrained to email composition, rewrite, and HTML email drafting tools inside compose.
           <br>
           ${escapeHtml(sendingDomain ? `Active sending domain: ${sendingDomain.hostname}` : getSendingSummaryMessage())}
         </div>
@@ -858,6 +945,45 @@ function renderConnectionsView() {
       });
       await refreshBootstrap();
       setStatus('Resend connected.');
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  document.getElementById('geminiForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      setStatus('Verifying Gemini API key...');
+      await api('/api/providers/gemini', {
+        method: 'POST',
+        body: JSON.stringify({
+          label: form.get('label'),
+          apiKey: form.get('apiKey'),
+          defaultModel: form.get('defaultModel'),
+        }),
+      });
+      await refreshBootstrap();
+      setStatus('Gemini connected.');
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  document.getElementById('groqForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      setStatus('Verifying Llama connection...');
+      await api('/api/providers/groq', {
+        method: 'POST',
+        body: JSON.stringify({
+          label: form.get('label'),
+          apiKey: form.get('apiKey'),
+        }),
+      });
+      await refreshBootstrap();
+      setStatus('Llama connected.');
     } catch (error) {
       showError(error);
     }
@@ -1240,12 +1366,267 @@ function renderContent() {
   });
 }
 
+function normalizeComposeEditorMode(value) {
+  return value === 'html' ? 'html' : 'rich';
+}
+
+function stripHtmlToText(html) {
+  const container = document.createElement('div');
+  container.innerHTML = String(html || '');
+  return container.innerText.replace(/\u00a0/g, ' ').trim();
+}
+
+function textToComposeHtml(text) {
+  const normalized = String(text || '').replace(/\r\n/g, '\n');
+  if (!normalized.trim()) return '<p><br></p>';
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.split('\n').map((line) => escapeHtml(line)).join('<br>'));
+  return `<p>${paragraphs.join('</p><p>')}</p>`;
+}
+
+function getComposeDocumentHtml() {
+  if (!state.compose) return '<p><br></p>';
+  if (String(state.compose.htmlBody || '').trim()) return state.compose.htmlBody;
+  return textToComposeHtml(state.compose.textBody || '');
+}
+
+function inferComposeEditorMode(payload = null) {
+  const candidateHtml = String(payload?.htmlBody || '').trim();
+  return /<(?:!doctype|html|head|body|table|style)\b/i.test(candidateHtml) ? 'html' : 'rich';
+}
+
+function getComposeSelection() {
+  if (!state.compose) return null;
+  if (state.compose.editorMode === 'html') {
+    const source = document.getElementById('composeHtmlSource');
+    if (!source) return null;
+    const start = source.selectionStart ?? 0;
+    const end = source.selectionEnd ?? 0;
+    if (end > start) {
+      return {
+        kind: 'html',
+        start,
+        end,
+        text: source.value.slice(start, end),
+      };
+    }
+    return null;
+  }
+
+  const editor = getComposeEditor();
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.commonAncestorContainer) || range.collapsed) return null;
+  return {
+    kind: 'rich',
+    range: range.cloneRange(),
+    text: selection.toString(),
+  };
+}
+
+function replaceRichSelection(range, html) {
+  const editor = getComposeEditor();
+  if (!editor) return;
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const fragment = range.createContextualFragment(html);
+  const lastNode = fragment.lastChild;
+  range.deleteContents();
+  range.insertNode(fragment);
+  const nextRange = document.createRange();
+  if (lastNode) {
+    nextRange.setStartAfter(lastNode);
+    nextRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+  }
+  editor.focus();
+}
+
+function insertComposeHtml(html) {
+  if (state.compose?.editorMode === 'html') {
+    const source = document.getElementById('composeHtmlSource');
+    if (!source) return;
+    const start = source.selectionStart ?? source.value.length;
+    const end = source.selectionEnd ?? start;
+    source.value = `${source.value.slice(0, start)}${html}${source.value.slice(end)}`;
+    source.focus();
+    source.selectionStart = start + html.length;
+    source.selectionEnd = start + html.length;
+    return;
+  }
+
+  const selection = getComposeSelection();
+  const editor = getComposeEditor();
+  if (!editor) return;
+  editor.focus();
+  if (selection?.kind === 'rich') {
+    replaceRichSelection(selection.range, html);
+    return;
+  }
+  document.execCommand('insertHTML', false, html);
+}
+
+function replaceComposeSelection(selection, replacementText) {
+  if (!selection || !replacementText) return;
+  if (selection.kind === 'html') {
+    const source = document.getElementById('composeHtmlSource');
+    if (!source) return;
+    source.value = `${source.value.slice(0, selection.start)}${replacementText}${source.value.slice(selection.end)}`;
+    source.focus();
+    source.selectionStart = selection.start;
+    source.selectionEnd = selection.start + replacementText.length;
+    return;
+  }
+  replaceRichSelection(selection.range, textToComposeHtml(replacementText));
+}
+
+function updateComposeFieldsFromAi(result) {
+  const subjectInput = document.querySelector('#composeForm [name="subject"]');
+  if (subjectInput && typeof result.subject === 'string') {
+    subjectInput.value = result.subject;
+  }
+
+  if (state.compose?.editorMode === 'html') {
+    const source = document.getElementById('composeHtmlSource');
+    if (source) {
+      source.value = result.htmlBody || textToComposeHtml(result.textBody || '');
+      source.focus();
+    }
+    return;
+  }
+
+  const editor = getComposeEditor();
+  if (editor) {
+    editor.innerHTML = result.htmlBody || textToComposeHtml(result.textBody || '');
+    editor.focus();
+  }
+}
+
+function setComposeAiBusy(isBusy) {
+  document.querySelectorAll('.compose-ai-button').forEach((button) => {
+    button.disabled = isBusy || button.dataset.aiDisabled === 'true';
+  });
+}
+
+async function runComposeAiAction(action) {
+  if (!state.compose) return;
+  const form = document.getElementById('composeForm');
+  const selection = getComposeSelection();
+  if (form) {
+    await syncComposeFromForm(form);
+  }
+
+  const provider = state.compose.aiProvider || getDefaultAiProvider();
+  if (!getAvailableAiProviders().includes(provider)) {
+    throw new Error('Connect Gemini or Llama in Connections before using AI tools.');
+  }
+
+  setComposeAiBusy(true);
+  try {
+    setStatus(`Running ${getAiProviderLabel(provider)}...`);
+    const payload = await api('/api/ai/assist', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider,
+        model: provider === 'gemini' ? state.compose.aiModel : null,
+        tone: state.compose.aiTone,
+        action,
+        prompt: state.compose.aiPrompt || '',
+        outputMode: state.compose.editorMode === 'html' ? 'html_email' : 'plain_text',
+        subject: state.compose.subject,
+        textBody: state.compose.editorMode === 'html'
+          ? (document.getElementById('composeHtmlSource')?.value || state.compose.htmlBody || '')
+          : state.compose.textBody,
+        htmlBody: state.compose.htmlBody || '',
+        selectionText: selection?.text || '',
+        to: state.compose.to || [],
+        cc: state.compose.cc || [],
+        bcc: state.compose.bcc || [],
+      }),
+    });
+
+    if (selection?.text && payload.result?.replacementText) {
+      replaceComposeSelection(selection, payload.result.replacementText);
+    } else {
+      updateComposeFieldsFromAi(payload.result || {});
+    }
+
+    if (form) {
+      await syncComposeFromForm(form);
+    }
+    scheduleDraftSave();
+    setStatus(`${getAiProviderLabel(provider)} updated the draft.`);
+  } finally {
+    setComposeAiBusy(false);
+  }
+}
+
+function applyComposeFormat(action) {
+  if (!state.compose) return;
+  if (state.compose.editorMode === 'html') {
+    throw new Error('Switch to Design mode to use formatting tools. HTML mode edits the raw email markup directly.');
+  }
+  const editor = getComposeEditor();
+  if (!editor) return;
+  editor.focus();
+
+  if (action === 'link') {
+    const url = window.prompt('Enter the link URL');
+    if (url) document.execCommand('createLink', false, url);
+    return;
+  }
+
+  if (action === 'emoji') {
+    insertComposeHtml('&#128578;');
+    return;
+  }
+
+  if (action === 'signature') {
+    const mailbox = getMailboxById(state.compose.mailboxId);
+    const signature = mailbox?.signature_html || textToComposeHtml(mailbox?.signature_text || '');
+    if (signature) insertComposeHtml(signature);
+    return;
+  }
+
+  const commands = {
+    bold: ['bold'],
+    italic: ['italic'],
+    underline: ['underline'],
+    strike: ['strikeThrough'],
+    bullets: ['insertUnorderedList'],
+    numbering: ['insertOrderedList'],
+    quote: ['formatBlock', '<blockquote>'],
+    clear: ['removeFormat'],
+    undo: ['undo'],
+    redo: ['redo'],
+  };
+  const command = commands[action];
+  if (!command) return;
+  document.execCommand(command[0], false, command[1] || null);
+}
+
 function renderCompose() {
   if (!state.compose) {
     refs.composeOverlay.classList.add('hidden');
     refs.composeOverlay.innerHTML = '';
     return;
   }
+
+  state.compose.editorMode = normalizeComposeEditorMode(state.compose.editorMode);
+  state.compose.aiProvider = getAvailableAiProviders().includes(state.compose.aiProvider)
+    ? state.compose.aiProvider
+    : getDefaultAiProvider();
+  state.compose.aiModel = GEMINI_MODEL_OPTIONS.some((option) => option.id === state.compose.aiModel)
+    ? state.compose.aiModel
+    : getDefaultGeminiModel();
+  state.compose.aiTone = AI_TONE_OPTIONS.some((option) => option.id === state.compose.aiTone)
+    ? state.compose.aiTone
+    : 'professional';
+  state.compose.aiPrompt = state.compose.aiPrompt || '';
 
   const selectedSendingMailboxes = getSelectedSendingMailboxes();
   const composeMailboxIsSelected = selectedSendingMailboxes.some((mailbox) => mailbox.id === state.compose.mailboxId);
@@ -1271,8 +1652,45 @@ function renderCompose() {
           ? getSendingSummaryMessage()
           : state.compose.mailboxId
             ? 'This draft still points at a receive-only mailbox. Pick a sender from the selected sending domain before sending.'
-          : getSendingSummaryMessage(),
+            : getSendingSummaryMessage(),
       );
+  const availableAiProviders = getAvailableAiProviders();
+  const aiEnabled = availableAiProviders.length > 0;
+  const aiProviderOptions = availableAiProviders.length
+    ? availableAiProviders.map((provider) => `
+        <option value="${provider}" ${provider === state.compose.aiProvider ? 'selected' : ''}>
+          ${escapeHtml(getAiProviderLabel(provider))}
+        </option>
+      `).join('')
+    : '<option value="">Connect Gemini or Llama first</option>';
+  const aiProviderBadge = state.compose.aiProvider === 'groq'
+    ? `<div class="compose-static-pill">Model: llama-3.3-70b-versatile</div>`
+    : `
+      <label class="label compact">
+        Gemini Model
+        <select name="aiModel">
+          ${GEMINI_MODEL_OPTIONS.map((option) => `
+            <option value="${option.id}" ${option.id === state.compose.aiModel ? 'selected' : ''}>
+              ${escapeHtml(option.label)}
+            </option>
+          `).join('')}
+        </select>
+      </label>
+    `;
+  const aiDisabledAttr = aiEnabled ? 'false' : 'true';
+  const composeBodyMarkup = state.compose.editorMode === 'html'
+    ? `
+      <label class="label full">
+        HTML Source
+        <textarea id="composeHtmlSource" class="compose-html-source" spellcheck="false">${escapeHtml(getComposeDocumentHtml())}</textarea>
+      </label>
+    `
+    : `
+      <label class="label full">
+        Message
+        <div id="composeEditor" class="compose-editor" contenteditable="true">${getComposeDocumentHtml()}</div>
+      </label>
+    `;
 
   refs.composeOverlay.classList.remove('hidden');
   refs.composeOverlay.innerHTML = `
@@ -1283,6 +1701,7 @@ function renderCompose() {
       </div>
       <div class="window-body stack">
         <form id="composeForm" class="stack">
+          <input type="hidden" name="editorMode" value="${state.compose.editorMode}">
           <div class="form-grid">
             <label class="label">
               From
@@ -1305,10 +1724,66 @@ function renderCompose() {
               <input name="subject" value="${escapeHtml(state.compose.subject || '')}">
             </label>
             <div class="full notice">${composeNotice}</div>
-            <label class="label full">
-              Message
-              <textarea class="compose-body" name="textBody">${escapeHtml(state.compose.textBody || '')}</textarea>
-            </label>
+            <div class="full compose-tool-panel">
+              <div class="compose-mode-switch">
+                <button class="button compose-mode-button ${state.compose.editorMode === 'rich' ? 'active' : ''}" data-compose-mode="rich" type="button">Design</button>
+                <button class="button compose-mode-button ${state.compose.editorMode === 'html' ? 'active' : ''}" data-compose-mode="html" type="button">HTML</button>
+              </div>
+              <div class="compose-ai-row">
+                <label class="label compact">
+                  AI Engine
+                  <select name="aiProvider" ${aiEnabled ? '' : 'disabled'}>
+                    ${aiProviderOptions}
+                  </select>
+                </label>
+                ${aiProviderBadge}
+                <label class="label compact">
+                  Tone
+                  <select name="aiTone" ${aiEnabled ? '' : 'disabled'}>
+                    ${AI_TONE_OPTIONS.map((option) => `
+                      <option value="${option.id}" ${option.id === state.compose.aiTone ? 'selected' : ''}>
+                        ${escapeHtml(option.label)}
+                      </option>
+                    `).join('')}
+                  </select>
+                </label>
+                <label class="label compose-ai-prompt">
+                  AI Prompt
+                  <input id="composeAiPrompt" name="aiPrompt" value="${escapeHtml(state.compose.aiPrompt || '')}" placeholder="Draft a follow-up, rewrite this warmer, or build a full HTML promo email...">
+                </label>
+                <button class="button compose-ai-button" data-ai-action="compose" data-ai-disabled="${aiDisabledAttr}" type="button" ${aiEnabled ? '' : 'disabled'}>AI Compose</button>
+                <button class="button compose-ai-button" data-ai-action="rewrite" data-ai-disabled="${aiDisabledAttr}" type="button" ${aiEnabled ? '' : 'disabled'}>Rewrite</button>
+                <button class="button compose-ai-button" data-ai-action="shorten" data-ai-disabled="${aiDisabledAttr}" type="button" ${aiEnabled ? '' : 'disabled'}>Shorter</button>
+                <button class="button compose-ai-button" data-ai-action="expand" data-ai-disabled="${aiDisabledAttr}" type="button" ${aiEnabled ? '' : 'disabled'}>Longer</button>
+                <button class="button compose-ai-button" data-ai-action="formalize" data-ai-disabled="${aiDisabledAttr}" type="button" ${aiEnabled ? '' : 'disabled'}>Formal</button>
+                <button class="button compose-ai-button" data-ai-action="casualize" data-ai-disabled="${aiDisabledAttr}" type="button" ${aiEnabled ? '' : 'disabled'}>Casual</button>
+                <button class="button compose-ai-button" data-ai-action="proofread" data-ai-disabled="${aiDisabledAttr}" type="button" ${aiEnabled ? '' : 'disabled'}>Fix</button>
+                <button class="button compose-ai-button" data-ai-action="summarize" data-ai-disabled="${aiDisabledAttr}" type="button" ${aiEnabled ? '' : 'disabled'}>Summarize</button>
+              </div>
+              <div class="compose-ai-note muted">
+                AI tools are pre-tuned for email composition and rewrite only. Highlight text to transform a selection, or switch to HTML mode when you want Gemini or Llama to generate raw HTML email code.
+              </div>
+              ${state.compose.editorMode === 'rich' ? `
+                <div class="compose-format-row">
+                  <button class="button compose-format-button" data-format="bold" type="button"><strong>B</strong></button>
+                  <button class="button compose-format-button" data-format="italic" type="button"><em>I</em></button>
+                  <button class="button compose-format-button" data-format="underline" type="button"><span class="format-underline">U</span></button>
+                  <button class="button compose-format-button" data-format="strike" type="button"><span class="format-strike">S</span></button>
+                  <button class="button compose-format-button" data-format="bullets" type="button">Bullets</button>
+                  <button class="button compose-format-button" data-format="numbering" type="button">Numbering</button>
+                  <button class="button compose-format-button" data-format="quote" type="button">Quote</button>
+                  <button class="button compose-format-button" data-format="link" type="button">Link</button>
+                  <button class="button compose-format-button" data-format="clear" type="button">Clear</button>
+                  <button class="button compose-format-button" data-format="emoji" type="button">Emoji</button>
+                  <button class="button compose-format-button" data-format="signature" type="button">Signature</button>
+                  <button class="button compose-format-button" data-format="undo" type="button">Undo</button>
+                  <button class="button compose-format-button" data-format="redo" type="button">Redo</button>
+                </div>
+              ` : `
+                <div class="compose-ai-note muted">HTML mode sends the raw markup in <code>htmlBody</code>. Use it for coded newsletters, promotional layouts, or AI-generated email templates.</div>
+              `}
+            </div>
+            ${composeBodyMarkup}
             <label class="label full">
               Attachments
               <input id="attachmentInput" type="file" multiple>
@@ -1331,6 +1806,46 @@ function renderCompose() {
   document.getElementById('discardDraftButton').addEventListener('click', closeCompose);
   document.getElementById('saveDraftButton').addEventListener('click', () => saveComposeDraft().catch(showError));
   document.getElementById('attachmentInput').addEventListener('change', (event) => uploadAttachments(event.target.files).catch(showError));
+  document.querySelectorAll('.compose-mode-button').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const form = document.getElementById('composeForm');
+      if (form) await syncComposeFromForm(form);
+      state.compose.editorMode = button.dataset.composeMode;
+      renderCompose();
+    });
+  });
+  document.querySelectorAll('.compose-ai-button').forEach((button) => {
+    button.addEventListener('click', () => runComposeAiAction(button.dataset.aiAction).catch(showError));
+  });
+  document.querySelectorAll('.compose-format-button').forEach((button) => {
+    button.addEventListener('mousedown', (event) => event.preventDefault());
+    button.addEventListener('click', () => {
+      try {
+        applyComposeFormat(button.dataset.format);
+        scheduleDraftSave();
+      } catch (error) {
+        showError(error);
+      }
+    });
+  });
+  document.querySelector('#composeForm [name="aiProvider"]')?.addEventListener('change', async (event) => {
+    const form = document.getElementById('composeForm');
+    if (form) await syncComposeFromForm(form);
+    state.compose.aiProvider = event.target.value;
+    if (state.compose.aiProvider === 'gemini' && !GEMINI_MODEL_OPTIONS.some((option) => option.id === state.compose.aiModel)) {
+      state.compose.aiModel = getDefaultGeminiModel();
+    }
+    renderCompose();
+  });
+  document.querySelector('#composeForm [name="aiTone"]')?.addEventListener('change', (event) => {
+    state.compose.aiTone = event.target.value;
+  });
+  document.querySelector('#composeForm [name="aiModel"]')?.addEventListener('change', (event) => {
+    state.compose.aiModel = event.target.value;
+  });
+  getComposeAiPromptInput()?.addEventListener('input', (event) => {
+    state.compose.aiPrompt = event.target.value;
+  });
   document.getElementById('composeForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     await syncComposeFromForm(event.currentTarget);
@@ -1353,6 +1868,12 @@ function renderCompose() {
       showError(error);
     }
   });
+
+  const form = document.getElementById('composeForm');
+  if (form) {
+    form.addEventListener('input', scheduleDraftSave, { passive: true });
+    form.addEventListener('change', scheduleDraftSave, { passive: true });
+  }
 }
 
 function render() {
@@ -1389,6 +1910,19 @@ async function syncComposeFromForm(form) {
   const formData = new FormData(form);
   const selectedMailboxId = String(formData.get('mailboxId') || '').trim();
   const mailbox = selectedMailboxId ? getMailboxById(selectedMailboxId) : null;
+  const editorMode = normalizeComposeEditorMode(formData.get('editorMode') || state.compose?.editorMode);
+  let htmlBody = '';
+  let textBody = '';
+
+  if (editorMode === 'html') {
+    htmlBody = document.getElementById('composeHtmlSource')?.value || '';
+    textBody = stripHtmlToText(htmlBody);
+  } else {
+    const editor = getComposeEditor();
+    htmlBody = String(editor?.innerHTML || '').trim();
+    textBody = String(editor?.innerText || '').replace(/\u00a0/g, ' ').trim();
+  }
+
   state.compose = {
     ...state.compose,
     mailboxId: mailbox?.id || state.compose.mailboxId || null,
@@ -1397,9 +1931,14 @@ async function syncComposeFromForm(form) {
     to: parseInlineAddressList(formData.get('to')),
     cc: parseInlineAddressList(formData.get('cc')),
     bcc: parseInlineAddressList(formData.get('bcc')),
-    subject: formData.get('subject'),
-    textBody: formData.get('textBody'),
-    htmlBody: '',
+    subject: String(formData.get('subject') || ''),
+    textBody,
+    htmlBody,
+    editorMode,
+    aiProvider: String(formData.get('aiProvider') || state.compose.aiProvider || getDefaultAiProvider()),
+    aiModel: String(formData.get('aiModel') || state.compose.aiModel || getDefaultGeminiModel()),
+    aiTone: String(formData.get('aiTone') || state.compose.aiTone || 'professional'),
+    aiPrompt: String(formData.get('aiPrompt') || state.compose.aiPrompt || ''),
   };
 }
 
@@ -1477,12 +2016,15 @@ function openCompose(payload = null) {
     htmlBody: '',
     attachments: [],
   };
+  state.compose = {
+    ...state.compose,
+    editorMode: payload?.editorMode || inferComposeEditorMode(payload),
+    aiProvider: payload?.aiProvider || getDefaultAiProvider(),
+    aiModel: payload?.aiModel || getDefaultGeminiModel(),
+    aiTone: payload?.aiTone || 'professional',
+    aiPrompt: payload?.aiPrompt || '',
+  };
   renderCompose();
-  const form = document.getElementById('composeForm');
-  if (form) {
-    form.addEventListener('input', scheduleDraftSave, { passive: true });
-    form.addEventListener('change', scheduleDraftSave, { passive: true });
-  }
 }
 
 async function downloadAttachment(attachmentId) {
