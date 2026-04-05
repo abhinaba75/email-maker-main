@@ -5,6 +5,7 @@ import {
   createAliasRule,
   createDomain,
   createMailbox,
+  deleteMailbox,
   deleteAliasRule,
   deleteDraft,
   ensureSchema,
@@ -15,6 +16,7 @@ import {
   getDomain,
   getDraft,
   getMailbox,
+  getMailboxDependencySummary,
   getThread,
   getUser,
   listAliasRules,
@@ -631,9 +633,30 @@ async function handleMailboxes(request, env, user, pathParts) {
 
   if ((request.method === 'PATCH' || request.method === 'PUT') && pathParts.length === 3) {
     const body = await readJson(request);
-    const mailbox = await updateMailbox(env.DB, user.id, pathParts[2], body);
+    const current = await getMailbox(env.DB, user.id, pathParts[2]);
+    if (!current) return apiError(404, 'Mailbox not found');
+    const localPart = body.localPart ? slugifyLocalPart(body.localPart) : current.local_part;
+    const domain = await getDomain(env.DB, user.id, current.domain_id);
+    const mailbox = await updateMailbox(env.DB, user.id, pathParts[2], {
+      ...body,
+      localPart,
+      emailAddress: `${localPart}@${domain.hostname}`,
+    });
     if (!mailbox) return apiError(404, 'Mailbox not found');
     return json({ mailbox });
+  }
+
+  if (request.method === 'DELETE' && pathParts.length === 3) {
+    const dependencies = await getMailboxDependencySummary(env.DB, user.id, pathParts[2]);
+    if (dependencies.inboxAliasCount || dependencies.catchAllCount) {
+      return apiError(
+        409,
+        'This mailbox is still used by inbox aliases or catch-all delivery. Reassign those rules before deleting the mailbox.',
+      );
+    }
+    const mailbox = await deleteMailbox(env.DB, user.id, pathParts[2]);
+    if (!mailbox) return apiError(404, 'Mailbox not found');
+    return json({ mailbox, ok: true });
   }
 
   return apiError(405, 'Unsupported mailbox route');

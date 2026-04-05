@@ -90,8 +90,24 @@ function stripHtmlLikeText(value) {
   );
 }
 
-function extractJsonObject(text) {
+function stripMarkdownCodeFence(text) {
   const candidate = String(text || '').trim();
+  const match = candidate.match(/^```(?:json|html|text)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : candidate;
+}
+
+function tryParseJson(text) {
+  const candidate = stripMarkdownCodeFence(text);
+  if (!candidate) return null;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonObject(text) {
+  const candidate = stripMarkdownCodeFence(text);
   if (!candidate) return null;
   try {
     return JSON.parse(candidate);
@@ -105,6 +121,29 @@ function extractJsonObject(text) {
       return null;
     }
   }
+}
+
+function unwrapStructuredValue(value, preferredKeys = []) {
+  if (value == null) return '';
+  if (typeof value === 'string') return stripMarkdownCodeFence(value);
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => unwrapStructuredValue(item, preferredKeys))
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  if (typeof value === 'object') {
+    for (const key of preferredKeys) {
+      const nested = unwrapStructuredValue(value[key], preferredKeys);
+      if (nested) return nested;
+    }
+    for (const key of ['text', 'content', 'body', 'message', 'output', 'html', 'htmlBody']) {
+      const nested = unwrapStructuredValue(value[key], preferredKeys);
+      if (nested) return nested;
+    }
+  }
+  return '';
 }
 
 export function normalizeAiAction(action) {
@@ -206,12 +245,14 @@ export function parseAiAssistResult(text, {
 } = {}) {
   const parsed = extractJsonObject(text);
   if (useSelection) {
+    const cleanedText = stripMarkdownCodeFence(text);
     return {
       replacementText: normalizeLineEndings(
         parsed?.replacementText
           || parsed?.textBody
           || parsed?.body
-          || text,
+          || unwrapStructuredValue(parsed, ['replacementText', 'textBody', 'body', 'content'])
+          || cleanedText,
       ),
     };
   }
@@ -220,15 +261,41 @@ export function parseAiAssistResult(text, {
   const fallbackHtmlBody = normalizedOutputMode === 'html_email'
     ? String(parsed?.htmlBody || text || fallbackHtml || '').trim()
     : '';
+  const cleanedText = stripMarkdownCodeFence(text);
+  const htmlDerivedText = normalizedOutputMode === 'html_email'
+    ? stripHtmlLikeText(
+        parsed?.htmlBody
+          || unwrapStructuredValue(parsed, ['htmlBody', 'html', 'content'])
+          || cleanedText,
+      )
+    : '';
+  const structuredText = parsed
+    ? unwrapStructuredValue(parsed, ['textBody', 'replacementText', 'body', 'content', 'htmlBody'])
+    : '';
+  const normalizedTextBody = normalizeLineEndings(
+    parsed?.textBody
+      || parsed?.body
+      || htmlDerivedText
+      || structuredText
+      || cleanedText
+      || fallbackText,
+  );
+  const normalizedHtmlBody = normalizedOutputMode === 'html_email'
+    ? String(
+        parsed?.htmlBody
+          || unwrapStructuredValue(parsed, ['htmlBody', 'html', 'content'])
+          || fallbackHtmlBody
+          || '',
+      ).trim()
+    : '';
   return {
-    subject: normalizeLineEndings(parsed?.subject || fallbackSubject),
-    htmlBody: fallbackHtmlBody,
-    textBody: normalizeLineEndings(
-      parsed?.textBody
-        || parsed?.body
-        || (normalizedOutputMode === 'html_email' && parsed?.htmlBody ? stripHtmlLikeText(parsed.htmlBody) : '')
-        || text
-        || fallbackText,
+    subject: normalizeLineEndings(
+      parsed?.subject
+        || unwrapStructuredValue(parsed?.subject)
+        || unwrapStructuredValue(parsed?.title)
+        || fallbackSubject,
     ),
+    htmlBody: normalizedHtmlBody,
+    textBody: normalizedTextBody,
   };
 }

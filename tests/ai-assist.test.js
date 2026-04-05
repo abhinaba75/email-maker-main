@@ -38,5 +38,12 @@ test('parseAiAssistResult preserves raw HTML email output when model returns mar
   });
 
   assert.equal(result.htmlBody, '<table><tr><td>Hello</td></tr></table>');
-  assert.equal(result.textBody, '<table><tr><td>Hello</td></tr></table>');
+  assert.equal(result.textBody, 'Hello');
+});
+
+test('parseAiAssistResult unwraps fenced JSON payloads instead of leaking braces into compose', () => {
+  const result = parseAiAssistResult('```json\n{\"subject\":\"Hello\",\"textBody\":\"Thanks for the update.\"}\n```');
+
+  assert.equal(result.subject, 'Hello');
+  assert.equal(result.textBody, 'Thanks for the update.');
 });

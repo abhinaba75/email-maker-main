@@ -323,6 +323,26 @@ textarea { min-height: 120px; resize: vertical; }
 .stack { display: grid; gap: 10px; }
 .label { display: grid; gap: 4px; font-size: 12px; }
 .label.compact { min-width: 0; }
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.mailbox-inline-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px dotted #c0c0c0;
+}
+.mailbox-inline-row:last-child {
+  border-bottom: none;
+}
+.mailbox-row-active {
+  background: #eef4ff;
+}
 .muted { color: var(--muted); }
 .notice { padding: 8px 10px; background: #f8f3d6; border: 1px solid #d8c56f; font-size: 12px; }
 .status-good { color: var(--success); }

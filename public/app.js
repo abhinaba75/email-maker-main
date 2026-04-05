@@ -46,6 +46,7 @@ const state = {
   view: 'mail',
   folder: 'inbox',
   mailboxId: null,
+  mailboxEditorId: null,
   status: 'Booting mail console...',
   compose: null,
   easterEggs: {
@@ -991,6 +992,7 @@ function renderConnectionsView() {
 }
 
 function renderDomainsView() {
+  const editingMailbox = state.mailboxEditorId ? getMailboxById(state.mailboxEditorId) : null;
   refs.contentView.innerHTML = `
     <div class="stack">
       <section class="property-sheet">
@@ -1030,7 +1032,7 @@ function renderDomainsView() {
                   <td>${escapeHtml(domain.routing_status)}</td>
                   <td>${escapeHtml(formatSendCapability(domain.sendCapability || domain.send_capability))}</td>
                   <td>${escapeHtml(domain.resend_status)}</td>
-                  <td>${mailboxes.map((mailbox) => escapeHtml(mailbox.email_address)).join('<br>')}</td>
+                  <td>${mailboxes.map((mailbox) => escapeHtml(mailbox.email_address)).join('<br>') || '<span class="muted">No mailboxes</span>'}</td>
                   <td>
                     ${domain.isSelectedSendingDomain
                       ? `<span class="chip">${escapeHtml(actionLabel)}</span>`
@@ -1046,21 +1048,52 @@ function renderDomainsView() {
       </section>
 
       <section class="property-sheet">
-        <div class="property-title">Add Mailbox</div>
+        <div class="property-title">Manage Mailboxes</div>
+        <div class="notice">Mailbox editing lives here. Pick a mailbox row to edit it in the dedicated editor below, or delete it if it is no longer used for inbox aliases or catch-all delivery.</div>
+        <table class="grid-table">
+          <thead>
+            <tr><th>Domain</th><th>Email</th><th>Display Name</th><th>Default</th><th>Action</th></tr>
+          </thead>
+          <tbody>
+            ${state.data.mailboxes.map((mailbox) => {
+              const domain = getDomainById(mailbox.domain_id);
+              return `
+                <tr class="${mailbox.id === editingMailbox?.id ? 'mailbox-row-active' : ''}">
+                  <td>${escapeHtml(domain?.hostname || '')}</td>
+                  <td>${escapeHtml(mailbox.email_address)}</td>
+                  <td>${escapeHtml(mailbox.display_name || '')}</td>
+                  <td>${mailbox.is_default_sender ? 'Yes' : 'No'}</td>
+                  <td class="inline-actions">
+                    <button class="button edit-mailbox" data-mailbox="${mailbox.id}" type="button">Edit Mailbox</button>
+                    <button class="button delete-mailbox" data-mailbox="${mailbox.id}" type="button">Delete</button>
+                  </td>
+                </tr>
+              `;
+            }).join('') || '<tr><td colspan="5" class="muted">No mailboxes configured.</td></tr>'}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="property-sheet">
+        <div class="property-title">${editingMailbox ? `Mailbox Editor: ${escapeHtml(editingMailbox.email_address)}` : 'Create Mailbox'}</div>
         <form id="mailboxForm" class="form-grid">
+          <input type="hidden" name="mailboxId" value="${escapeHtml(editingMailbox?.id || '')}">
           <label class="label">
             Domain
-            <select name="domainId">
+            <select name="domainId" ${editingMailbox ? 'disabled' : ''}>
               <option value="">Select a domain</option>
-              ${state.data.domains.map((domain) => `<option value="${domain.id}">${escapeHtml(domain.hostname)}</option>`).join('')}
+              ${state.data.domains.map((domain) => `<option value="${domain.id}" ${domain.id === editingMailbox?.domain_id ? 'selected' : ''}>${escapeHtml(domain.hostname)}</option>`).join('')}
             </select>
           </label>
-          <label class="label">Local Part<input name="localPart" placeholder="sales"></label>
-          <label class="label">Display Name<input name="displayName" placeholder="Sales Desk"></label>
-          <label class="label">Signature Text<input name="signatureText" placeholder="Regards, Sales Desk"></label>
-          <label class="label full">Signature HTML<textarea name="signatureHtml" placeholder="<p>Regards,<br>Sales Desk</p>"></textarea></label>
-          <label class="label"><input type="checkbox" name="isDefaultSender"> Default sender for domain</label>
-          <div class="full"><button class="button" type="submit">Create Mailbox</button></div>
+          <label class="label">Local Part<input name="localPart" placeholder="sales" value="${escapeHtml(editingMailbox?.local_part || '')}"></label>
+          <label class="label">Display Name<input name="displayName" placeholder="Sales Desk" value="${escapeHtml(editingMailbox?.display_name || '')}"></label>
+          <label class="label">Signature Text<input name="signatureText" placeholder="Regards, Sales Desk" value="${escapeHtml(editingMailbox?.signature_text || '')}"></label>
+          <label class="label full">Signature HTML<textarea name="signatureHtml" placeholder="<p>Regards,<br>Sales Desk</p>">${escapeHtml(editingMailbox?.signature_html || '')}</textarea></label>
+          <label class="label"><input type="checkbox" name="isDefaultSender" ${editingMailbox?.is_default_sender ? 'checked' : ''}> Default sender for domain</label>
+          <div class="full inline-actions">
+            <button class="button" type="submit">${editingMailbox ? 'Save Mailbox' : 'Create Mailbox'}</button>
+            ${editingMailbox ? '<button class="button" type="button" id="cancelMailboxEditButton">Cancel</button>' : ''}
+          </div>
         </form>
         <div class="notice">Default sender preference only matters on the selected sending domain. Receive-only domains still work for inboxes, aliases, and forwarding.</div>
       </section>
@@ -1114,17 +1147,54 @@ function renderDomainsView() {
     const form = new FormData(event.currentTarget);
     const body = Object.fromEntries(form.entries());
     body.isDefaultSender = form.get('isDefaultSender') === 'on';
+    const mailboxId = String(form.get('mailboxId') || '').trim();
     try {
-      setStatus('Creating mailbox...');
-      await api('/api/mailboxes', {
-        method: 'POST',
+      setStatus(mailboxId ? 'Saving mailbox...' : 'Creating mailbox...');
+      await api(mailboxId ? `/api/mailboxes/${mailboxId}` : '/api/mailboxes', {
+        method: mailboxId ? 'PATCH' : 'POST',
         body: JSON.stringify(body),
       });
+      state.mailboxEditorId = null;
       await refreshBootstrap();
-      setStatus('Mailbox created.');
+      setStatus(mailboxId ? 'Mailbox updated.' : 'Mailbox created.');
     } catch (error) {
       showError(error);
     }
+  });
+
+  document.getElementById('cancelMailboxEditButton')?.addEventListener('click', () => {
+    state.mailboxEditorId = null;
+    renderDomainsView();
+  });
+
+  document.querySelectorAll('.edit-mailbox').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.mailboxEditorId = button.dataset.mailbox;
+      renderDomainsView();
+      document.getElementById('mailboxForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+
+  document.querySelectorAll('.delete-mailbox').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const mailbox = getMailboxById(button.dataset.mailbox);
+      if (!mailbox) return;
+      const confirmed = window.confirm(`Delete mailbox ${mailbox.email_address}? Aliases that deliver to it will lose their mailbox target.`);
+      if (!confirmed) return;
+      try {
+        setStatus('Deleting mailbox...');
+        await api(`/api/mailboxes/${mailbox.id}`, {
+          method: 'DELETE',
+        });
+        if (state.mailboxEditorId === mailbox.id) {
+          state.mailboxEditorId = null;
+        }
+        await refreshBootstrap();
+        setStatus('Mailbox deleted.');
+      } catch (error) {
+        showError(error);
+      }
+    });
   });
 }
 
@@ -1944,7 +2014,23 @@ async function syncComposeFromForm(form) {
 
 let draftTimer = null;
 
-async function saveComposeDraft() {
+function upsertLocalDraft(draft) {
+  const nextDraft = {
+    ...draft,
+    to_json: draft.to_json || draft.to || [],
+    cc_json: draft.cc_json || draft.cc || [],
+    bcc_json: draft.bcc_json || draft.bcc || [],
+    attachment_json: draft.attachment_json || draft.attachments || [],
+  };
+  const existingIndex = state.data.drafts.findIndex((item) => item.id === nextDraft.id);
+  if (existingIndex === -1) {
+    state.data.drafts.unshift(nextDraft);
+    return;
+  }
+  state.data.drafts.splice(existingIndex, 1, nextDraft);
+}
+
+async function saveComposeDraft({ quiet = false } = {}) {
   if (!state.compose) return;
   const form = document.getElementById('composeForm');
   if (form) {
@@ -1955,15 +2041,16 @@ async function saveComposeDraft() {
     body: JSON.stringify(state.compose),
   });
   state.compose.id = payload.draft.id;
-  await refreshBootstrap();
-  renderCompose();
-  setStatus('Draft saved.');
+  upsertLocalDraft(payload.draft);
+  if (!quiet) {
+    setStatus('Draft saved.');
+  }
 }
 
 function scheduleDraftSave() {
   clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
-    saveComposeDraft().catch(showError);
+    saveComposeDraft({ quiet: true }).catch(showError);
   }, 1200);
 }
 

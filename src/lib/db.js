@@ -340,22 +340,28 @@ export async function createMailbox(db, data) {
 export async function updateMailbox(db, userId, mailboxId, patch) {
   const current = await getMailbox(db, userId, mailboxId);
   if (!current) return null;
+  const nextLocalPart = patch.localPart ?? current.local_part;
+  const nextEmailAddress = patch.emailAddress ?? current.email_address;
   if (patch.isDefaultSender) {
     await db.prepare(`UPDATE mailboxes SET is_default_sender = 0 WHERE domain_id = ?1`).bind(current.domain_id).run();
   }
   await db
     .prepare(
       `UPDATE mailboxes
-       SET display_name = ?3,
-           signature_html = ?4,
-           signature_text = ?5,
-           is_default_sender = ?6,
-           updated_at = ?7
+       SET local_part = ?3,
+           email_address = ?4,
+           display_name = ?5,
+           signature_html = ?6,
+           signature_text = ?7,
+           is_default_sender = ?8,
+           updated_at = ?9
        WHERE user_id = ?1 AND id = ?2`,
     )
     .bind(
       userId,
       mailboxId,
+      nextLocalPart,
+      nextEmailAddress,
       patch.displayName ?? current.display_name,
       patch.signatureHtml ?? current.signature_html,
       patch.signatureText ?? current.signature_text,
@@ -364,6 +370,77 @@ export async function updateMailbox(db, userId, mailboxId, patch) {
     )
     .run();
   return getMailbox(db, userId, mailboxId);
+}
+
+export async function deleteMailbox(db, userId, mailboxId) {
+  const mailbox = await getMailbox(db, userId, mailboxId);
+  if (!mailbox) return null;
+
+  await db
+    .prepare(
+      `UPDATE domains
+       SET catch_all_mailbox_id = NULL,
+           updated_at = ?3
+       WHERE user_id = ?1 AND catch_all_mailbox_id = ?2`,
+    )
+    .bind(userId, mailboxId, Date.now())
+    .run();
+
+  await db
+    .prepare(`DELETE FROM mailboxes WHERE user_id = ?1 AND id = ?2`)
+    .bind(userId, mailboxId)
+    .run();
+
+  const replacement = await first(
+    db.prepare(
+      `SELECT id
+       FROM mailboxes
+       WHERE user_id = ?1 AND domain_id = ?2
+       ORDER BY email_address ASC
+       LIMIT 1`,
+    ).bind(userId, mailbox.domain_id),
+  );
+
+  if (replacement) {
+    await db
+      .prepare(
+        `UPDATE mailboxes
+         SET is_default_sender = CASE WHEN id = ?3 THEN 1 ELSE 0 END,
+             updated_at = ?4
+         WHERE domain_id = ?2 AND user_id = ?1`,
+      )
+      .bind(userId, mailbox.domain_id, replacement.id, Date.now())
+      .run();
+  }
+
+  return mailbox;
+}
+
+export async function getMailboxDependencySummary(db, userId, mailboxId) {
+  const aliasDependency = await first(
+    db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM alias_rules
+       WHERE user_id = ?1
+         AND mailbox_id = ?2
+         AND mode != 'forward_only'`,
+    ).bind(userId, mailboxId),
+  );
+
+  const catchAllDependency = await first(
+    db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM domains
+       WHERE user_id = ?1
+         AND catch_all_mailbox_id = ?2
+         AND catch_all_mode != 'forward_only'`,
+    ).bind(userId, mailboxId),
+  );
+
+  return {
+    inboxAliasCount: Number(aliasDependency?.count || 0),
+    catchAllCount: Number(catchAllDependency?.count || 0),
+  };
 }
 
 export async function listForwardDestinations(db, userId) {
