@@ -1540,6 +1540,92 @@ function insertComposeHtml(html) {
   document.execCommand('insertHTML', false, html);
 }
 
+function normalizeSignatureFragment(html) {
+  const source = String(html || '').trim();
+  if (!source) return '';
+  try {
+    const parser = new DOMParser();
+    const documentNode = parser.parseFromString(source, 'text/html');
+    documentNode.body?.querySelectorAll('script, style, link, meta, title, iframe, object, embed, noscript').forEach((node) => node.remove());
+    const bodyMarkup = documentNode.body?.innerHTML?.trim();
+    return bodyMarkup || source;
+  } catch {
+    return source;
+  }
+}
+
+function normalizeMarkupForCompare(value) {
+  return String(value || '')
+    .replace(/>\s+</g, '><')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function appendSignatureToDocument(html, signatureFragment) {
+  const current = String(html || '');
+  const fragment = String(signatureFragment || '').trim();
+  if (!fragment) return current;
+  const currentText = stripHtmlToText(current).toLowerCase();
+  const signatureText = stripHtmlToText(fragment).toLowerCase();
+  const currentMarkup = normalizeMarkupForCompare(current);
+  const signatureMarkup = normalizeMarkupForCompare(fragment);
+  if ((signatureText && currentText.includes(signatureText))
+    || (signatureMarkup && currentMarkup.includes(signatureMarkup))) {
+    return current;
+  }
+  if (!stripHtmlToText(current)) {
+    return fragment;
+  }
+  if (/<\/body>/i.test(current)) {
+    return current.replace(/<\/body>/i, `${fragment}</body>`);
+  }
+  return `${current}<p><br></p>${fragment}`;
+}
+
+function appendComposeSignature(signatureHtml) {
+  const fragment = normalizeSignatureFragment(signatureHtml);
+  if (!fragment) return;
+
+  if (state.compose?.editorMode === 'html') {
+    const source = document.getElementById('composeHtmlSource');
+    if (!source) return;
+    source.value = appendSignatureToDocument(source.value, fragment);
+    source.focus();
+    source.selectionStart = source.value.length;
+    source.selectionEnd = source.value.length;
+    return;
+  }
+
+  const editor = getComposeEditor();
+  if (!editor) return;
+  const signatureText = stripHtmlToText(fragment).toLowerCase();
+  editor.querySelectorAll('[data-compose-signature="true"]').forEach((node) => node.remove());
+  Array.from(editor.children).forEach((node) => {
+    if (stripHtmlToText(node.outerHTML || node.textContent || '').toLowerCase() === signatureText) {
+      node.remove();
+    }
+  });
+  const hasBodyText = Boolean(stripHtmlToText(editor.innerHTML));
+  if (hasBodyText) {
+    const spacer = document.createElement('p');
+    spacer.innerHTML = '<br>';
+    editor.appendChild(spacer);
+  }
+  const signatureBlock = document.createElement('div');
+  signatureBlock.className = 'compose-signature-block';
+  signatureBlock.setAttribute('data-compose-signature', 'true');
+  signatureBlock.innerHTML = fragment;
+  editor.appendChild(signatureBlock);
+  editor.focus();
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function replaceComposeSelection(selection, replacementText) {
   if (!selection || !replacementText) return;
   if (selection.kind === 'html') {
@@ -1658,7 +1744,7 @@ function applyComposeFormat(action) {
   if (action === 'signature') {
     const mailbox = getMailboxById(state.compose.mailboxId);
     const signature = mailbox?.signature_html || textToComposeHtml(mailbox?.signature_text || '');
-    if (signature) insertComposeHtml(signature);
+    if (signature) appendComposeSignature(signature);
     return;
   }
 
