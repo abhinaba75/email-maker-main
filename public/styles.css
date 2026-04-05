@@ -660,6 +660,9 @@ textarea { min-height: 120px; resize: vertical; }
   border-left: 3px solid #93a4c6;
   color: #3e4f68;
 }
+.compose-signature-block {
+  margin-top: 12px;
+}
 .compose-html-source {
   resize: vertical;
   font-family: "Lucida Console", "Courier New", monospace;
