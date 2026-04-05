@@ -318,9 +318,11 @@ textarea { min-height: 120px; resize: vertical; }
 
 .grid-table th { background: #dbe3f3; }
 .form-grid { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.connections-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 .form-grid .full { grid-column: 1 / -1; }
 .stack { display: grid; gap: 10px; }
 .label { display: grid; gap: 4px; font-size: 12px; }
+.label.compact { min-width: 0; }
 .muted { color: var(--muted); }
 .notice { padding: 8px 10px; background: #f8f3d6; border: 1px solid #d8c56f; font-size: 12px; }
 .status-good { color: var(--success); }
@@ -571,6 +573,80 @@ textarea { min-height: 120px; resize: vertical; }
 
 .compose-window .window-body { padding: 10px; overflow: auto; }
 .compose-body { min-height: 240px; }
+.compose-tool-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  background: #eef1f7;
+  border: 1px solid #93a4c6;
+}
+.compose-mode-switch,
+.compose-ai-row,
+.compose-format-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+.compose-mode-button.active {
+  background: linear-gradient(180deg, #fff8d6, #f1d98a);
+}
+.compose-ai-prompt {
+  flex: 1 1 260px;
+}
+.compose-static-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 6px 10px;
+  background: #ffffff;
+  border-top: 2px solid var(--chrome-darker);
+  border-left: 2px solid var(--chrome-darker);
+  border-right: 2px solid var(--chrome-light);
+  border-bottom: 2px solid var(--chrome-light);
+  font-size: 12px;
+}
+.compose-ai-note {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.compose-editor,
+.compose-html-source {
+  width: 100%;
+  min-height: 280px;
+  padding: 10px;
+  background: #ffffff;
+  border-top: 2px solid var(--chrome-darker);
+  border-left: 2px solid var(--chrome-darker);
+  border-right: 2px solid var(--chrome-light);
+  border-bottom: 2px solid var(--chrome-light);
+}
+.compose-editor {
+  overflow: auto;
+  line-height: 1.6;
+  white-space: normal;
+}
+.compose-editor:focus,
+.compose-html-source:focus {
+  outline: 1px dotted #1c4fa1;
+  outline-offset: -4px;
+}
+.compose-editor p {
+  margin: 0 0 12px;
+}
+.compose-editor blockquote {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 3px solid #93a4c6;
+  color: #3e4f68;
+}
+.compose-html-source {
+  resize: vertical;
+  font-family: "Lucida Console", "Courier New", monospace;
+  line-height: 1.5;
+}
+.format-underline { text-decoration: underline; }
+.format-strike { text-decoration: line-through; }
 .chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { padding: 4px 6px; background: #ebeff8; border: 1px solid #8da1cb; font-size: 11px; }
 
