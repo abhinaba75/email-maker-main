@@ -927,6 +927,28 @@ function formatSender(displayName, email) {
   return displayName ? `${displayName} <${email}>` : email;
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function preserveSpacesForHtml(text) {
+  return escapeHtml(text).replace(/(^ +| {2,})/g, (segment) => '&nbsp;'.repeat(segment.length));
+}
+
+function textToEmailHtml(text) {
+  const normalized = String(text || '').replace(/\r\n/g, '\n');
+  if (!normalized.trim()) return '';
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.split('\n').map((line) => preserveSpacesForHtml(line)).join('<br>'));
+  return `<div>${paragraphs.map((paragraph) => `<p>${paragraph}</p>`).join('')}</div>`;
+}
+
 function toBase64(buffer) {
   const bytes = new Uint8Array(buffer);
   let binary = '';
@@ -997,6 +1019,7 @@ async function handleSend(request, env, user) {
     return apiError(400, 'Add at least one valid recipient in the To field.');
   }
   const attachments = await materializeAttachments(env, payload.attachments || []);
+  const htmlBody = String(payload.htmlBody || '').trim() || textToEmailHtml(payload.textBody || '');
   const sendResult = await sendResendEmail(resend.secret, {
     from: formatSender(mailbox.display_name, mailbox.email_address),
     to: to.map((item) => item.email),
@@ -1004,7 +1027,7 @@ async function handleSend(request, env, user) {
     bcc: bcc.map((item) => item.email),
     subject: payload.subject || '(no subject)',
     text: payload.textBody || '',
-    html: payload.htmlBody || payload.textBody || '',
+    html: htmlBody,
     attachments,
   });
 
@@ -1019,7 +1042,7 @@ async function handleSend(request, env, user) {
     bcc,
     subject: payload.subject || '(no subject)',
     textBody: payload.textBody || '',
-    htmlBody: payload.htmlBody || payload.textBody || '',
+    htmlBody,
     internetMessageId: `<${createId('forge-')}@${domain.hostname}>`,
     providerMessageId: sendResult.id || null,
     attachments: payload.attachments || [],
