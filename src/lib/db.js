@@ -8,11 +8,37 @@ const JSON_FIELDS = {
   threads: ['participants_json'],
   messages: ['from_json', 'to_json', 'cc_json', 'bcc_json', 'references_json'],
   drafts: ['to_json', 'cc_json', 'bcc_json', 'attachment_json'],
+  ingest_failures: ['payload_json'],
 };
 
 const SEND_CAPABILITIES = new Set(['send_enabled', 'receive_only', 'send_unavailable']);
 
 let schemaPromise;
+
+function encodeCursor(value) {
+  if (!value) return null;
+  return btoa(JSON.stringify(value))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function decodeCursor(value) {
+  if (!value) return null;
+  try {
+    const normalized = String(value).replace(/-/g, '+').replace(/_/g, '/');
+    const pad = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+    return JSON.parse(atob(normalized + pad));
+  } catch {
+    return null;
+  }
+}
+
+function clampLimit(value, fallback = 50, max = 100) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+}
 
 function splitSqlStatements(sql) {
   return String(sql || '')
@@ -58,6 +84,8 @@ function decorateDomain(row) {
     send_capability: sendCapability,
     sendCapability,
     canSend: sendCapability === 'send_enabled',
+    routing_error: row.routing_error || null,
+    routing_checked_at: row.routing_checked_at || null,
   };
 }
 
@@ -105,6 +133,18 @@ export function ensureSchema(db) {
       if (!(await hasColumn(db, 'domains', 'send_capability'))) {
         await db
           .prepare(`ALTER TABLE domains ADD COLUMN send_capability TEXT NOT NULL DEFAULT 'send_unavailable'`)
+          .run();
+      }
+
+      if (!(await hasColumn(db, 'domains', 'routing_error'))) {
+        await db
+          .prepare('ALTER TABLE domains ADD COLUMN routing_error TEXT')
+          .run();
+      }
+
+      if (!(await hasColumn(db, 'domains', 'routing_checked_at'))) {
+        await db
+          .prepare('ALTER TABLE domains ADD COLUMN routing_checked_at INTEGER')
           .run();
       }
     })().catch((error) => {
@@ -226,9 +266,9 @@ export async function createDomain(db, data) {
     .prepare(
       `INSERT INTO domains (
          id, user_id, zone_id, account_id, hostname, label, resend_domain_id, resend_status,
-         send_capability, routing_status, catch_all_mode, catch_all_mailbox_id, catch_all_forward_json,
-         ingest_destination_id, created_at, updated_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)`,
+         send_capability, routing_status, routing_error, routing_checked_at, catch_all_mode,
+         catch_all_mailbox_id, catch_all_forward_json, ingest_destination_id, created_at, updated_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)`,
     )
     .bind(
       id,
@@ -241,6 +281,8 @@ export async function createDomain(db, data) {
       data.resendStatus || 'not_started',
       normalizeSendCapability(data.sendCapability || data.send_capability),
       data.routingStatus || 'pending',
+      data.routingError || null,
+      data.routingCheckedAt || null,
       data.catchAllMode || 'inbox_only',
       data.catchAllMailboxId || null,
       serializeJson(data.catchAllForwardIds || []),
@@ -267,11 +309,13 @@ export async function updateDomain(db, userId, domainId, patch) {
            resend_status = ?6,
            send_capability = ?7,
            routing_status = ?8,
-           catch_all_mode = ?9,
-           catch_all_mailbox_id = ?10,
-           catch_all_forward_json = ?11,
-           ingest_destination_id = ?12,
-           updated_at = ?13
+           routing_error = ?9,
+           routing_checked_at = ?10,
+           catch_all_mode = ?11,
+           catch_all_mailbox_id = ?12,
+           catch_all_forward_json = ?13,
+           ingest_destination_id = ?14,
+           updated_at = ?15
        WHERE user_id = ?1 AND id = ?2`,
     )
     .bind(
@@ -283,6 +327,8 @@ export async function updateDomain(db, userId, domainId, patch) {
       next.resend_status || next.resendStatus || 'not_started',
       normalizeSendCapability(next.send_capability || next.sendCapability),
       next.routing_status || next.routingStatus || 'pending',
+      next.routing_error || next.routingError || null,
+      next.routing_checked_at || next.routingCheckedAt || null,
       next.catch_all_mode || next.catchAllMode || 'inbox_only',
       next.catch_all_mailbox_id || next.catchAllMailboxId || null,
       JSON.stringify(next.catch_all_forward_json || next.catchAllForwardIds || []),
@@ -291,6 +337,32 @@ export async function updateDomain(db, userId, domainId, patch) {
     )
     .run();
   return getDomain(db, userId, domainId);
+}
+
+export async function getAlertCounts(db, userId) {
+  const [routing, ingest] = await Promise.all([
+    first(
+      db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM domains
+         WHERE user_id = ?1
+           AND (routing_error IS NOT NULL OR routing_status = 'degraded')`,
+      ).bind(userId),
+    ),
+    first(
+      db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM ingest_failures
+         WHERE user_id = ?1
+           AND resolved_at IS NULL`,
+      ).bind(userId),
+    ),
+  ]);
+
+  return {
+    routingDegraded: Number(routing?.count || 0),
+    ingestFailures: Number(ingest?.count || 0),
+  };
 }
 
 export async function listMailboxes(db, userId, domainId = null) {
@@ -302,6 +374,37 @@ export async function listMailboxes(db, userId, domainId = null) {
         `SELECT * FROM mailboxes WHERE user_id = ?1 ORDER BY is_default_sender DESC, email_address ASC`,
       ).bind(userId);
   return all(stmt);
+}
+
+export async function listMailboxesPage(db, userId, options = {}) {
+  const limit = clampLimit(options.limit, 50, 100);
+  const cursor = decodeCursor(options.cursor);
+  const clauses = ['user_id = ?1'];
+  const params = [userId];
+  if (options.domainId) {
+    clauses.push(`domain_id = ?${params.length + 1}`);
+    params.push(options.domainId);
+  }
+  if (cursor?.updatedAt && cursor?.id) {
+    clauses.push(`(updated_at < ?${params.length + 1} OR (updated_at = ?${params.length + 1} AND id < ?${params.length + 2}))`);
+    params.push(cursor.updatedAt, cursor.id);
+  }
+  const rows = await all(
+    db.prepare(
+      `SELECT *
+       FROM mailboxes
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY updated_at DESC, id DESC
+       LIMIT ${limit + 1}`,
+    ).bind(...params),
+  );
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit);
+  const last = items.at(-1);
+  return {
+    items,
+    nextCursor: hasMore && last ? encodeCursor({ updatedAt: last.updated_at, id: last.id }) : null,
+  };
 }
 
 export async function getMailbox(db, userId, mailboxId) {
@@ -451,6 +554,33 @@ export async function listForwardDestinations(db, userId) {
   );
 }
 
+export async function listForwardDestinationsPage(db, userId, options = {}) {
+  const limit = clampLimit(options.limit, 50, 100);
+  const cursor = decodeCursor(options.cursor);
+  const params = [userId];
+  const clauses = ['user_id = ?1'];
+  if (cursor?.updatedAt && cursor?.id) {
+    clauses.push(`(updated_at < ?${params.length + 1} OR (updated_at = ?${params.length + 1} AND id < ?${params.length + 2}))`);
+    params.push(cursor.updatedAt, cursor.id);
+  }
+  const rows = await all(
+    db.prepare(
+      `SELECT *
+       FROM forward_destinations
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY updated_at DESC, id DESC
+       LIMIT ${limit + 1}`,
+    ).bind(...params),
+  );
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit);
+  const last = items.at(-1);
+  return {
+    items,
+    nextCursor: hasMore && last ? encodeCursor({ updatedAt: last.updated_at, id: last.id }) : null,
+  };
+}
+
 export async function getForwardDestination(db, userId, destinationId) {
   return first(
     db.prepare(`SELECT * FROM forward_destinations WHERE user_id = ?1 AND id = ?2`).bind(userId, destinationId),
@@ -507,6 +637,39 @@ export async function listAliasRules(db, userId, domainId = null) {
       ).bind(userId);
   const rows = await all(stmt);
   return rows.map((row) => mapRow('alias_rules', row));
+}
+
+export async function listAliasRulesPage(db, userId, options = {}) {
+  const limit = clampLimit(options.limit, 50, 100);
+  const cursor = decodeCursor(options.cursor);
+  const params = [userId];
+  const clauses = ['a.user_id = ?1'];
+  if (options.domainId) {
+    clauses.push(`a.domain_id = ?${params.length + 1}`);
+    params.push(options.domainId);
+  }
+  if (cursor?.updatedAt && cursor?.id) {
+    clauses.push(`(a.updated_at < ?${params.length + 1} OR (a.updated_at = ?${params.length + 1} AND a.id < ?${params.length + 2}))`);
+    params.push(cursor.updatedAt, cursor.id);
+  }
+  const rows = await all(
+    db.prepare(
+      `SELECT a.*, m.email_address AS mailbox_email, d.hostname
+       FROM alias_rules a
+       LEFT JOIN mailboxes m ON a.mailbox_id = m.id
+       JOIN domains d ON a.domain_id = d.id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY a.updated_at DESC, a.id DESC
+       LIMIT ${limit + 1}`,
+    ).bind(...params),
+  );
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit).map((row) => mapRow('alias_rules', row));
+  const last = rows.slice(0, limit).at(-1);
+  return {
+    items,
+    nextCursor: hasMore && last ? encodeCursor({ updatedAt: last.updated_at, id: last.id }) : null,
+  };
 }
 
 export async function getAliasRule(db, userId, aliasId) {
@@ -757,6 +920,103 @@ async function ensureThread(db, {
   return threadId;
 }
 
+export async function findInboundMessageByRawKey(db, userId, rawKey) {
+  if (!rawKey) return null;
+  return first(
+    db.prepare(
+      `SELECT *
+       FROM messages
+       WHERE user_id = ?1
+         AND direction = 'inbound'
+         AND raw_r2_key = ?2
+       LIMIT 1`,
+    ).bind(userId, rawKey),
+  );
+}
+
+export async function findInboundMessageByInternetMessageId(db, userId, domainId, internetMessageId) {
+  if (!internetMessageId) return null;
+  return first(
+    db.prepare(
+      `SELECT *
+       FROM messages
+       WHERE user_id = ?1
+         AND domain_id = ?2
+         AND direction = 'inbound'
+         AND internet_message_id = ?3
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    ).bind(userId, domainId, internetMessageId),
+  );
+}
+
+export async function recordIngestFailure(db, {
+  userId = null,
+  domainId = null,
+  recipient,
+  messageId = null,
+  rawKey,
+  reason,
+  payload = {},
+}) {
+  const timestamp = Date.now();
+  const existing = await first(
+    db.prepare(
+      `SELECT *
+       FROM ingest_failures
+       WHERE raw_r2_key = ?1 AND reason = ?2
+       LIMIT 1`,
+    ).bind(rawKey, reason),
+  );
+  const id = existing?.id || createId('ingf_');
+  await db
+    .prepare(
+      `INSERT INTO ingest_failures (
+         id, user_id, domain_id, recipient, message_id, raw_r2_key, reason, payload_json,
+         first_seen_at, last_seen_at, retry_count, resolved_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, 0, NULL)
+       ON CONFLICT(raw_r2_key, reason) DO UPDATE SET
+         user_id = excluded.user_id,
+         domain_id = excluded.domain_id,
+         recipient = excluded.recipient,
+         message_id = excluded.message_id,
+         payload_json = excluded.payload_json,
+         last_seen_at = excluded.last_seen_at,
+         retry_count = ingest_failures.retry_count + 1,
+         resolved_at = NULL`,
+    )
+    .bind(
+      id,
+      userId,
+      domainId,
+      recipient,
+      messageId,
+      rawKey,
+      reason,
+      JSON.stringify(payload || {}),
+      existing?.first_seen_at || timestamp,
+    )
+    .run();
+
+  return first(
+    db.prepare(`SELECT * FROM ingest_failures WHERE id = ?1`).bind(id),
+  );
+}
+
+export async function resolveIngestFailuresForRawKey(db, rawKey) {
+  if (!rawKey) return;
+  await db
+    .prepare(
+      `UPDATE ingest_failures
+       SET resolved_at = ?2,
+           last_seen_at = ?2
+       WHERE raw_r2_key = ?1
+         AND resolved_at IS NULL`,
+    )
+    .bind(rawKey, Date.now())
+    .run();
+}
+
 export async function saveInboundMessage(db, {
   userId,
   domainId,
@@ -775,6 +1035,16 @@ export async function saveInboundMessage(db, {
   receivedAt,
   attachments,
 }) {
+  const existingByRawKey = await findInboundMessageByRawKey(db, userId, rawKey);
+  if (existingByRawKey) {
+    return { messageId: existingByRawKey.id, threadId: existingByRawKey.thread_id, duplicate: true };
+  }
+
+  const existingByMessageId = await findInboundMessageByInternetMessageId(db, userId, domainId, internetMessageId);
+  if (existingByMessageId) {
+    return { messageId: existingByMessageId.id, threadId: existingByMessageId.thread_id, duplicate: true };
+  }
+
   const participants = [from?.email, ...to.map((entry) => entry.email), ...cc.map((entry) => entry.email)].filter(Boolean);
   const threadId = await ensureThread(db, {
     userId,
@@ -845,7 +1115,8 @@ export async function saveInboundMessage(db, {
   }
 
   await refreshThreadSummary(db, threadId);
-  return messageId;
+  await resolveIngestFailuresForRawKey(db, rawKey);
+  return { messageId, threadId, duplicate: false };
 }
 
 export async function saveOutgoingMessage(db, {
@@ -970,6 +1241,49 @@ export async function listThreads(db, userId, options = {}) {
   return rows.map((row) => mapRow('threads', row));
 }
 
+export async function listThreadsPage(db, userId, options = {}) {
+  const folder = normalizeFolder(options.folder || 'inbox');
+  const limit = clampLimit(options.limit, 50, 100);
+  const cursor = decodeCursor(options.cursor);
+  const clauses = ['t.user_id = ?1', 't.folder = ?2'];
+  const params = [userId, folder];
+  if (options.mailboxId) {
+    clauses.push(`t.mailbox_id = ?${params.length + 1}`);
+    params.push(options.mailboxId);
+  }
+  if (options.domainId) {
+    clauses.push(`t.domain_id = ?${params.length + 1}`);
+    params.push(options.domainId);
+  }
+  if (options.query) {
+    clauses.push(`(t.subject LIKE ?${params.length + 1} OR t.snippet LIKE ?${params.length + 1})`);
+    params.push(`%${options.query}%`);
+  }
+  if (cursor?.latestMessageAt && cursor?.id) {
+    clauses.push(`(t.latest_message_at < ?${params.length + 1} OR (t.latest_message_at = ?${params.length + 1} AND t.id < ?${params.length + 2}))`);
+    params.push(cursor.latestMessageAt, cursor.id);
+  }
+  const rows = await all(
+    db.prepare(
+      `SELECT t.*, d.hostname, m.email_address AS mailbox_email
+       FROM threads t
+       LEFT JOIN domains d ON d.id = t.domain_id
+       LEFT JOIN mailboxes m ON m.id = t.mailbox_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY t.latest_message_at DESC, t.id DESC
+       LIMIT ${limit + 1}`,
+    ).bind(...params),
+  );
+  const hasMore = rows.length > limit;
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map((row) => mapRow('threads', row));
+  const last = pageRows.at(-1);
+  return {
+    items,
+    nextCursor: hasMore && last ? encodeCursor({ latestMessageAt: last.latest_message_at, id: last.id }) : null,
+  };
+}
+
 export async function getThread(db, userId, threadId) {
   const thread = await first(
     db.prepare(
@@ -1040,6 +1354,36 @@ export async function listDrafts(db, userId) {
     ).bind(userId),
   );
   return rows.map((row) => mapRow('drafts', row));
+}
+
+export async function listDraftsPage(db, userId, options = {}) {
+  const limit = clampLimit(options.limit, 50, 100);
+  const cursor = decodeCursor(options.cursor);
+  const params = [userId];
+  const clauses = ['d.user_id = ?1'];
+  if (cursor?.updatedAt && cursor?.id) {
+    clauses.push(`(d.updated_at < ?${params.length + 1} OR (d.updated_at = ?${params.length + 1} AND d.id < ?${params.length + 2}))`);
+    params.push(cursor.updatedAt, cursor.id);
+  }
+  const rows = await all(
+    db.prepare(
+      `SELECT d.*, m.email_address AS mailbox_email, dm.hostname
+       FROM drafts d
+       LEFT JOIN mailboxes m ON m.id = d.mailbox_id
+       JOIN domains dm ON dm.id = d.domain_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY d.updated_at DESC, d.id DESC
+       LIMIT ${limit + 1}`,
+    ).bind(...params),
+  );
+  const hasMore = rows.length > limit;
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map((row) => mapRow('drafts', row));
+  const last = pageRows.at(-1);
+  return {
+    items,
+    nextCursor: hasMore && last ? encodeCursor({ updatedAt: last.updated_at, id: last.id }) : null,
+  };
 }
 
 export async function getDraft(db, userId, draftId) {

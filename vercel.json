@@ -1,9 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
+  "redirects": [
     {
       "source": "/:path*",
-      "destination": "https://alias-forge-2000.abhinaba.workers.dev/:path*"
+      "destination": "https://alias-forge-2000.abhinaba.workers.dev/:path*",
+      "permanent": false
     }
   ]
 }

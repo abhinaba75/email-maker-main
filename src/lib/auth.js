@@ -2,11 +2,19 @@ import { parseBearerToken } from './http.js';
 
 const JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
 const encoder = new TextEncoder();
+const CLOCK_SKEW_SECONDS = 30;
 
 let jwksCache = {
   keys: [],
   expiresAt: 0,
 };
+
+export function __resetJwksCacheForTests() {
+  jwksCache = {
+    keys: [],
+    expiresAt: 0,
+  };
+}
 
 function decodeBase64Url(input) {
   const base = input.replace(/-/g, '+').replace(/_/g, '/');
@@ -43,10 +51,23 @@ async function getFirebaseJwks() {
   if (Date.now() < jwksCache.expiresAt && jwksCache.keys.length) {
     return jwksCache.keys;
   }
+  const cache = caches.default;
+  const cacheRequest = new Request(JWKS_URL, { method: 'GET' });
+  const cached = await cache.match(cacheRequest);
+  if (cached?.ok) {
+    const body = await cached.json();
+    jwksCache = {
+      keys: body.keys || [],
+      expiresAt: Date.now() + parseMaxAge(cached.headers.get('cache-control')) * 1000,
+    };
+    return jwksCache.keys;
+  }
+
   const response = await fetch(JWKS_URL, { cf: { cacheTtl: 300, cacheEverything: true } });
   if (!response.ok) {
     throw new Error('Failed to fetch Firebase signing keys');
   }
+  await cache.put(cacheRequest, response.clone());
   const body = await response.json();
   jwksCache = {
     keys: body.keys || [],
@@ -92,7 +113,10 @@ export async function verifyFirebaseToken(token, env) {
     throw new Error('Invalid Firebase issuer');
   }
   if (!parsed.payload.sub) throw new Error('Missing Firebase subject');
-  if (parsed.payload.exp <= nowSeconds) throw new Error('Firebase token expired');
+  if (parsed.payload.exp <= nowSeconds - CLOCK_SKEW_SECONDS) throw new Error('Firebase token expired');
+  if (parsed.payload.nbf && parsed.payload.nbf > nowSeconds + CLOCK_SKEW_SECONDS) {
+    throw new Error('Firebase token is not active yet');
+  }
 
   return {
     id: parsed.payload.user_id || parsed.payload.sub,
@@ -107,4 +131,3 @@ export async function requireUser(request, env) {
   if (!token) throw new Error('Missing bearer token');
   return verifyFirebaseToken(token, env);
 }
-

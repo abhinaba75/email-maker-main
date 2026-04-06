@@ -1,5 +1,5 @@
 import PostalMime from 'postal-mime';
-import { requireUser } from './lib/auth.js';
+import { requireUser, verifyFirebaseToken } from './lib/auth.js';
 import {
   applyThreadAction,
   createAliasRule,
@@ -9,8 +9,10 @@ import {
   deleteAliasRule,
   deleteDraft,
   ensureSchema,
+  findInboundMessageByRawKey,
   getAliasRule,
   getAliasRuleByRecipient,
+  getAlertCounts,
   getAttachment,
   getConnection,
   getDomain,
@@ -23,9 +25,15 @@ import {
   listConnections,
   listDomains,
   listDrafts,
+  listDraftsPage,
   listForwardDestinations,
+  listForwardDestinationsPage,
   listMailboxes,
+  listMailboxesPage,
   listThreads,
+  listThreadsPage,
+  listAliasRulesPage,
+  recordIngestFailure,
   saveConnection,
   saveDraft,
   saveInboundMessage,
@@ -37,7 +45,7 @@ import {
   upsertForwardDestination,
   upsertUser,
 } from './lib/db.js';
-import { apiError, json, maybeReadJson, parseUrl, readJson } from './lib/http.js';
+import { apiError, json, maybeReadJson, parseBearerToken, parseUrl, readJson } from './lib/http.js';
 import { decryptText, encryptText, maskSecret } from './lib/crypto.js';
 import { buildAiAssistRequest, parseAiAssistResult } from './lib/ai.js';
 import {
@@ -84,11 +92,19 @@ import {
 } from './lib/sending.js';
 
 const EMAIL_WORKER_DESTINATION = 'alias-forge-2000';
+const DEFAULT_ALLOWED_ORIGINS = new Set([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:8787',
+  'http://127.0.0.1:8787',
+]);
+const PUBLIC_ATTACHMENT_TTL_SECONDS = 300;
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_TOTAL_ATTACHMENT_BYTES = 35 * 1024 * 1024;
 
 function buildRuntimeConfig(env) {
   return {
     appName: env.APP_NAME || 'Alias Forge 2000',
-    ingestDomain: env.INGEST_DOMAIN || '',
     firebase: {
       apiKey: env.FIREBASE_API_KEY || '',
       authDomain: env.FIREBASE_AUTH_DOMAIN || '',
@@ -97,6 +113,186 @@ function buildRuntimeConfig(env) {
       messagingSenderId: env.FIREBASE_MESSAGING_SENDER_ID || '',
     },
   };
+}
+
+function getAllowedOrigins(env, requestOrigin) {
+  const allowedOrigins = new Set(DEFAULT_ALLOWED_ORIGINS);
+  if (requestOrigin) allowedOrigins.add(requestOrigin);
+  String(env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .forEach((entry) => allowedOrigins.add(entry));
+  return allowedOrigins;
+}
+
+function createCorsHeaders(request, env) {
+  const requestOrigin = new URL(request.url).origin;
+  const origin = request.headers.get('origin');
+  if (!origin) return null;
+  const allowedOrigins = getAllowedOrigins(env, requestOrigin);
+  if (!allowedOrigins.has(origin)) return false;
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Allow-Credentials': 'false',
+    Vary: 'Origin',
+  };
+}
+
+function withCors(request, env, response) {
+  const corsHeaders = createCorsHeaders(request, env);
+  if (!corsHeaders) return response;
+  if (corsHeaders === false) {
+    return apiError(403, 'Origin not allowed');
+  }
+  const headers = new Headers(response.headers);
+  Object.entries(corsHeaders).forEach(([key, value]) => headers.set(key, value));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function createPreflightResponse(request, env) {
+  const corsHeaders = createCorsHeaders(request, env);
+  if (corsHeaders === false) {
+    return apiError(403, 'Origin not allowed');
+  }
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders || {},
+  });
+}
+
+function isApiRequest(url) {
+  return url.pathname === '/api/runtime-config' || url.pathname.startsWith('/api/');
+}
+
+function encodeBase64Url(value) {
+  return btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function decodeBase64Url(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const pad = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+  return atob(normalized + pad);
+}
+
+function timingSafeEqualString(left, right) {
+  const leftBytes = new TextEncoder().encode(String(left || ''));
+  const rightBytes = new TextEncoder().encode(String(right || ''));
+  if (leftBytes.length !== rightBytes.length) return false;
+  let result = 0;
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    result |= leftBytes[index] ^ rightBytes[index];
+  }
+  return result === 0;
+}
+
+async function signAttachmentToken(env, payload) {
+  requireEncryptionKey(env);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(env.APP_ENCRYPTION_KEY),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  return encodeBase64Url(String.fromCharCode(...new Uint8Array(signature)));
+}
+
+async function verifyAttachmentSignature(env, payload, signature) {
+  const expected = await signAttachmentToken(env, payload);
+  return timingSafeEqualString(expected, signature);
+}
+
+async function buildAttachmentUrl(request, env, attachment) {
+  const expiresAt = Math.floor(Date.now() / 1000) + PUBLIC_ATTACHMENT_TTL_SECONDS;
+  const payload = `${attachment.r2Key}:${expiresAt}`;
+  const sig = await signAttachmentToken(env, payload);
+  const url = new URL('/api/public/attachments', request.url);
+  url.searchParams.set('key', encodeBase64Url(attachment.r2Key));
+  url.searchParams.set('exp', String(expiresAt));
+  url.searchParams.set('sig', sig);
+  return url.toString();
+}
+
+async function markDomainRoutingHealth(db, userId, domainId, { ok, message = null, routingStatus = null }) {
+  return updateDomain(db, userId, domainId, {
+    routingStatus: routingStatus || (ok ? 'enabled' : 'degraded'),
+    routingError: ok ? null : String(message || 'Routing synchronization failed'),
+    routingCheckedAt: Date.now(),
+  });
+}
+
+function getRealtimeStub(env, userId) {
+  const id = env.REALTIME_HUB.idFromName(userId);
+  return env.REALTIME_HUB.get(id);
+}
+
+async function publishRealtimeEvent(env, userId, event) {
+  try {
+    const stub = getRealtimeStub(env, userId);
+    await stub.fetch('https://realtime.internal/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+  } catch (error) {
+    console.error('realtime_publish_failed', {
+      userId,
+      type: event?.type,
+      message: error.message,
+    });
+  }
+}
+
+export class RealtimeHub {
+  constructor(state) {
+    this.state = state;
+    this.sockets = new Set();
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname.endsWith('/connect')) {
+      if (request.headers.get('Upgrade') !== 'websocket') {
+        return new Response('Expected websocket', { status: 426 });
+      }
+      const pair = new WebSocketPair();
+      const client = pair[0];
+      const server = pair[1];
+      server.accept();
+      this.sockets.add(server);
+      const removeSocket = () => this.sockets.delete(server);
+      server.addEventListener('close', removeSocket);
+      server.addEventListener('error', removeSocket);
+      server.send(JSON.stringify({ type: 'realtime.connected' }));
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    if (url.pathname.endsWith('/publish') && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const payload = JSON.stringify({
+        ...body,
+        emittedAt: Date.now(),
+      });
+      for (const socket of [...this.sockets]) {
+        try {
+          socket.send(payload);
+        } catch {
+          this.sockets.delete(socket);
+        }
+      }
+      return new Response('ok');
+    }
+
+    return new Response('Not found', { status: 404 });
+  }
 }
 
 async function loadSecret(db, env, userId, provider) {
@@ -144,7 +340,7 @@ function buildWorkerRulePayload(domain, { isCatchAll, localPart, enabled }) {
   };
 }
 
-async function reconcileAliasRoutes(db, env, userId) {
+async function reconcileAliasRoutes(db, env, userId, options = {}) {
   const cf = await loadSecret(db, env, userId, 'cloudflare');
   if (!cf) return;
 
@@ -152,36 +348,59 @@ async function reconcileAliasRoutes(db, env, userId) {
     listDomains(db, userId),
     listAliasRules(db, userId),
   ]);
-  const domainsById = new Map(domains.map((domain) => [domain.id, domain]));
-
+  const requestedDomainIds = options.domainIds ? new Set(options.domainIds) : null;
+  const domainsById = new Map(
+    domains
+      .filter((domain) => !requestedDomainIds || requestedDomainIds.has(domain.id))
+      .map((domain) => [domain.id, domain]),
+  );
+  const aliasesByDomain = new Map();
   for (const alias of aliases) {
-    const domain = domainsById.get(alias.domain_id);
-    if (!domain) continue;
+    if (!domainsById.has(alias.domain_id)) continue;
+    const items = aliasesByDomain.get(alias.domain_id) || [];
+    items.push(alias);
+    aliasesByDomain.set(alias.domain_id, items);
+  }
 
-    try {
-      const payload = buildWorkerRulePayload(domain, {
-        isCatchAll: Boolean(alias.is_catch_all),
-        localPart: alias.local_part,
-        enabled: Boolean(alias.enabled),
-      });
-      if (alias.is_catch_all) {
-        await updateCatchAllRule(cf.secret, domain.zone_id, payload);
-      } else {
-        const cloudflareRule = await upsertRoutingRule(cf.secret, domain.zone_id, alias.cloudflare_rule_id, payload);
-        const nextRuleId = cloudflareRule.id || cloudflareRule.tag || alias.cloudflare_rule_id || null;
-        if (nextRuleId !== alias.cloudflare_rule_id) {
-          await updateAliasRule(db, userId, alias.id, {
-            cloudflareRuleId: nextRuleId,
-          });
+  for (const [domainId, domain] of domainsById.entries()) {
+    const domainAliases = aliasesByDomain.get(domainId) || [];
+    let lastError = null;
+    for (const alias of domainAliases) {
+      try {
+        const payload = buildWorkerRulePayload(domain, {
+          isCatchAll: Boolean(alias.is_catch_all),
+          localPart: alias.local_part,
+          enabled: Boolean(alias.enabled),
+        });
+        if (alias.is_catch_all) {
+          await updateCatchAllRule(cf.secret, domain.zone_id, payload);
+        } else {
+          const cloudflareRule = await upsertRoutingRule(cf.secret, domain.zone_id, alias.cloudflare_rule_id, payload);
+          const nextRuleId = cloudflareRule.id || cloudflareRule.tag || alias.cloudflare_rule_id || null;
+          if (nextRuleId !== alias.cloudflare_rule_id) {
+            await updateAliasRule(db, userId, alias.id, {
+              cloudflareRuleId: nextRuleId,
+            });
+          }
         }
+      } catch (error) {
+        lastError = error;
+        console.error('alias_route_reconcile_failed', {
+          aliasId: alias.id,
+          domainId: alias.domain_id,
+          message: error.message,
+        });
       }
-    } catch (error) {
-      console.error('alias_route_reconcile_failed', {
-        aliasId: alias.id,
-        domainId: alias.domain_id,
-        message: error.message,
-      });
     }
+    await markDomainRoutingHealth(db, userId, domainId, {
+      ok: !lastError,
+      message: lastError?.message || null,
+    });
+    await publishRealtimeEvent(env, userId, {
+      type: lastError ? 'routing.degraded' : 'routing.updated',
+      domainId,
+      message: lastError?.message || null,
+    });
   }
 }
 
@@ -309,26 +528,35 @@ async function getAuthenticatedContext(request, env) {
   return { user };
 }
 
+async function getRealtimeContext(request, env) {
+  await ensureSchema(env.DB);
+  const url = parseUrl(request);
+  const token = url.searchParams.get('token') || parseBearerToken(request);
+  if (!token) {
+    const error = new Error('Missing bearer token');
+    error.status = 401;
+    throw error;
+  }
+  const profile = await verifyFirebaseToken(token, env);
+  const user = await upsertUser(env.DB, profile);
+  return { user };
+}
+
 async function bootstrapData(db, env, userId) {
-  await reconcileAliasRoutes(db, env, userId);
-  const [connections, reconciliation, mailboxes, forwardDestinations, aliases, drafts] = await Promise.all([
+  const [connections, reconciliation, mailboxesPage, alerts] = await Promise.all([
     listConnections(db, userId),
     reconcileSendingDomainState(db, env, userId),
-    listMailboxes(db, userId),
-    listForwardDestinations(db, userId),
-    listAliasRules(db, userId),
-    listDrafts(db, userId),
+    listMailboxesPage(db, userId, { limit: 100 }),
+    getAlertCounts(db, userId),
   ]);
   return {
     connections: connections.map(toConnectionSummary),
     domains: reconciliation.domains,
-    mailboxes,
-    forwardDestinations,
-    aliases,
-    drafts,
+    mailboxes: mailboxesPage.items,
     selectedSendingDomainId: reconciliation.selectedSendingDomainId,
     sendingDomainId: reconciliation.sendingDomainId,
     sendingStatusMessage: reconciliation.sendingStatusMessage,
+    alertCounts: alerts,
   };
 }
 
@@ -409,7 +637,6 @@ async function handleResendConnection(request, env, user) {
     resendDomains: domains?.data || [],
     refreshResendMetadata: true,
   });
-  await reconcileAliasRoutes(env.DB, env, user.id);
   return json({
     connection,
     selectedSendingDomainId: reconciliation.selectedSendingDomainId,
@@ -506,16 +733,18 @@ async function handleDomains(request, env, user, pathParts) {
     const localPart = slugifyLocalPart(body.defaultMailboxLocalPart || 'admin');
     const displayName = String(body.displayName || body.label || zone.name).trim();
     let routingStatus = 'pending';
+    let routingError = null;
     try {
       await enableEmailRouting(cf.secret, zone.id);
       routingStatus = 'enabled';
-    } catch {
+    } catch (error) {
       try {
         const routing = await getEmailRouting(cf.secret, zone.id);
         routingStatus = routing.enabled ? 'enabled' : 'pending';
       } catch {
         routingStatus = 'pending';
       }
+      routingError = error.message || 'Unable to confirm Cloudflare routing state';
     }
 
     const domain = await createDomain(env.DB, {
@@ -527,6 +756,8 @@ async function handleDomains(request, env, user, pathParts) {
       resendStatus: 'not_configured',
       sendCapability: SEND_CAPABILITY.UNAVAILABLE,
       routingStatus,
+      routingError: routingStatus === 'enabled' ? null : routingError,
+      routingCheckedAt: Date.now(),
     });
 
     const resend = await loadSecret(env.DB, env, user.id, 'resend');
@@ -568,9 +799,12 @@ async function handleDomains(request, env, user, pathParts) {
       try {
         const routing = await getEmailRouting(cf.secret, domain.zone_id);
         patch.routingStatus = routing.enabled ? 'enabled' : 'pending';
-      } catch {
+        patch.routingError = null;
+      } catch (error) {
         patch.routingStatus = domain.routing_status;
+        patch.routingError = error.message || domain.routing_error || null;
       }
+      patch.routingCheckedAt = Date.now();
     }
     const updated = await updateDomain(env.DB, user.id, domain.id, patch);
     const reconciliation = await reconcileSendingDomainState(env.DB, env, user.id, {
@@ -585,6 +819,16 @@ async function handleDomains(request, env, user, pathParts) {
       sendingDomainId: reconciliation.sendingDomainId,
       sendingStatusMessage: reconciliation.sendingStatusMessage,
     });
+  }
+
+  if (request.method === 'POST' && pathParts.length === 4 && pathParts[3] === 'repair-routing') {
+    const domain = await getDomain(env.DB, user.id, pathParts[2]);
+    if (!domain) return apiError(404, 'Domain not found');
+    await reconcileAliasRoutes(env.DB, env, user.id, {
+      domainIds: [domain.id],
+    });
+    const updated = await getDomain(env.DB, user.id, domain.id);
+    return json({ domain: updated });
   }
 
   if (request.method === 'POST' && pathParts.length === 4 && pathParts[3] === 'select-sending') {
@@ -608,8 +852,15 @@ async function handleDomains(request, env, user, pathParts) {
 async function handleMailboxes(request, env, user, pathParts) {
   if (request.method === 'GET') {
     const url = parseUrl(request);
+    const page = await listMailboxesPage(env.DB, user.id, {
+      domainId: url.searchParams.get('domainId'),
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+    });
     return json({
-      mailboxes: await listMailboxes(env.DB, user.id, url.searchParams.get('domainId')),
+      items: page.items,
+      nextCursor: page.nextCursor,
+      mailboxes: page.items,
     });
   }
 
@@ -665,8 +916,15 @@ async function handleMailboxes(request, env, user, pathParts) {
 async function handleForwardDestinations(request, env, user) {
   const cf = await loadSecret(env.DB, env, user.id, 'cloudflare');
   if (request.method === 'GET') {
+    const url = parseUrl(request);
+    const page = await listForwardDestinationsPage(env.DB, user.id, {
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+    });
     return json({
-      forwardDestinations: await listForwardDestinations(env.DB, user.id),
+      items: page.items,
+      nextCursor: page.nextCursor,
+      forwardDestinations: page.items,
     });
   }
 
@@ -690,8 +948,15 @@ async function handleForwardDestinations(request, env, user) {
 async function handleAliases(request, env, user, pathParts) {
   if (request.method === 'GET' && pathParts.length === 2) {
     const url = parseUrl(request);
+    const page = await listAliasRulesPage(env.DB, user.id, {
+      domainId: url.searchParams.get('domainId'),
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+    });
     return json({
-      aliases: await listAliasRules(env.DB, user.id, url.searchParams.get('domainId')),
+      items: page.items,
+      nextCursor: page.nextCursor,
+      aliases: page.items,
     });
   }
 
@@ -724,9 +989,25 @@ async function handleAliases(request, env, user, pathParts) {
       enabled: true,
     });
 
-    const cloudflareRule = body.isCatchAll
-      ? await updateCatchAllRule(cf.secret, domain.zone_id, payload)
-      : await upsertRoutingRule(cf.secret, domain.zone_id, null, payload);
+    let cloudflareRule;
+    try {
+      cloudflareRule = body.isCatchAll
+        ? await updateCatchAllRule(cf.secret, domain.zone_id, payload)
+        : await upsertRoutingRule(cf.secret, domain.zone_id, null, payload);
+      await markDomainRoutingHealth(env.DB, user.id, domain.id, { ok: true });
+      await publishRealtimeEvent(env, user.id, {
+        type: 'routing.updated',
+        domainId: domain.id,
+      });
+    } catch (error) {
+      await markDomainRoutingHealth(env.DB, user.id, domain.id, { ok: false, message: error.message });
+      await publishRealtimeEvent(env, user.id, {
+        type: 'routing.degraded',
+        domainId: domain.id,
+        message: error.message,
+      });
+      throw error;
+    }
 
     const alias = await createAliasRule(env.DB, {
       id: aliasId,
@@ -774,10 +1055,25 @@ async function handleAliases(request, env, user, pathParts) {
       enabled: body.enabled !== false,
     });
     let cloudflareRule = null;
-    if (existing.is_catch_all) {
-      cloudflareRule = await updateCatchAllRule(cf.secret, domain.zone_id, payload);
-    } else {
-      cloudflareRule = await upsertRoutingRule(cf.secret, domain.zone_id, existing.cloudflare_rule_id, payload);
+    try {
+      if (existing.is_catch_all) {
+        cloudflareRule = await updateCatchAllRule(cf.secret, domain.zone_id, payload);
+      } else {
+        cloudflareRule = await upsertRoutingRule(cf.secret, domain.zone_id, existing.cloudflare_rule_id, payload);
+      }
+      await markDomainRoutingHealth(env.DB, user.id, domain.id, { ok: true });
+      await publishRealtimeEvent(env, user.id, {
+        type: 'routing.updated',
+        domainId: domain.id,
+      });
+    } catch (error) {
+      await markDomainRoutingHealth(env.DB, user.id, domain.id, { ok: false, message: error.message });
+      await publishRealtimeEvent(env, user.id, {
+        type: 'routing.degraded',
+        domainId: domain.id,
+        message: error.message,
+      });
+      throw error;
     }
     const alias = await updateAliasRule(env.DB, user.id, existing.id, {
       mailboxId: mailbox?.id || null,
@@ -802,16 +1098,38 @@ async function handleAliases(request, env, user, pathParts) {
     const existing = await getAliasRule(env.DB, user.id, pathParts[2]);
     if (!existing) return apiError(404, 'Alias not found');
     const domain = await getDomain(env.DB, user.id, existing.domain_id);
-    if (existing.is_catch_all) {
-      await updateCatchAllRule(cf.secret, domain.zone_id, {
-        enabled: false,
-        matchers: [{ type: 'all' }],
-        actions: [{ type: 'drop' }],
+    try {
+      if (existing.is_catch_all) {
+        await updateCatchAllRule(cf.secret, domain.zone_id, {
+          enabled: false,
+          matchers: [{ type: 'all' }],
+          actions: [{ type: 'drop' }],
+        });
+      } else if (existing.cloudflare_rule_id) {
+        await deleteRoutingRule(cf.secret, domain.zone_id, existing.cloudflare_rule_id);
+      }
+      await markDomainRoutingHealth(env.DB, user.id, domain.id, { ok: true });
+      await publishRealtimeEvent(env, user.id, {
+        type: 'routing.updated',
+        domainId: domain.id,
       });
-    } else if (existing.cloudflare_rule_id) {
-      await deleteRoutingRule(cf.secret, domain.zone_id, existing.cloudflare_rule_id);
+    } catch (error) {
+      await markDomainRoutingHealth(env.DB, user.id, domain.id, { ok: false, message: error.message });
+      await publishRealtimeEvent(env, user.id, {
+        type: 'routing.degraded',
+        domainId: domain.id,
+        message: error.message,
+      });
+      throw error;
     }
     await deleteAliasRule(env.DB, user.id, existing.id);
+    if (existing.is_catch_all) {
+      await updateDomain(env.DB, user.id, domain.id, {
+        catchAllMode: 'inbox_only',
+        catchAllMailboxId: null,
+        catchAllForwardIds: [],
+      });
+    }
     return json({ ok: true });
   }
 
@@ -821,13 +1139,18 @@ async function handleAliases(request, env, user, pathParts) {
 async function handleThreads(request, env, user, pathParts) {
   if (request.method === 'GET' && pathParts.length === 2) {
     const url = parseUrl(request);
+    const page = await listThreadsPage(env.DB, user.id, {
+      folder: url.searchParams.get('folder') || 'inbox',
+      mailboxId: url.searchParams.get('mailboxId') || null,
+      domainId: url.searchParams.get('domainId') || null,
+      query: url.searchParams.get('query') || '',
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+    });
     return json({
-      threads: await listThreads(env.DB, user.id, {
-        folder: url.searchParams.get('folder') || 'inbox',
-        mailboxId: url.searchParams.get('mailboxId') || null,
-        domainId: url.searchParams.get('domainId') || null,
-        query: url.searchParams.get('query') || '',
-      }),
+      items: page.items,
+      nextCursor: page.nextCursor,
+      threads: page.items,
     });
   }
 
@@ -841,6 +1164,11 @@ async function handleThreads(request, env, user, pathParts) {
     const body = await readJson(request);
     const thread = await applyThreadAction(env.DB, user.id, pathParts[2], body.action);
     if (!thread) return apiError(404, 'Thread not found');
+    await publishRealtimeEvent(env, user.id, {
+      type: 'thread.updated',
+      threadId: thread.id,
+      folder: thread.folder,
+    });
     return json({ thread });
   }
 
@@ -849,7 +1177,16 @@ async function handleThreads(request, env, user, pathParts) {
 
 async function handleDrafts(request, env, user, pathParts) {
   if (request.method === 'GET' && pathParts.length === 2) {
-    return json({ drafts: await listDrafts(env.DB, user.id) });
+    const url = parseUrl(request);
+    const page = await listDraftsPage(env.DB, user.id, {
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+    });
+    return json({
+      items: page.items,
+      nextCursor: page.nextCursor,
+      drafts: page.items,
+    });
   }
 
   if (request.method === 'POST' && pathParts.length === 2) {
@@ -868,6 +1205,10 @@ async function handleDrafts(request, env, user, pathParts) {
       textBody: body.textBody || '',
       htmlBody: body.htmlBody || '',
       attachments: body.attachments || [],
+    });
+    await publishRealtimeEvent(env, user.id, {
+      type: 'draft.updated',
+      draftId: draft.id,
     });
     return json({ draft }, { status: 201 });
   }
@@ -891,11 +1232,20 @@ async function handleDrafts(request, env, user, pathParts) {
       htmlBody: body.htmlBody ?? current.html_body,
       attachments: body.attachments ?? current.attachment_json,
     });
+    await publishRealtimeEvent(env, user.id, {
+      type: 'draft.updated',
+      draftId: draft.id,
+    });
     return json({ draft });
   }
 
   if (request.method === 'DELETE' && pathParts.length === 3) {
     await deleteDraft(env.DB, user.id, pathParts[2]);
+    await publishRealtimeEvent(env, user.id, {
+      type: 'draft.updated',
+      draftId: pathParts[2],
+      deleted: true,
+    });
     return json({ ok: true });
   }
 
@@ -949,21 +1299,27 @@ function textToEmailHtml(text) {
   return `<div>${paragraphs.map((paragraph) => `<p>${paragraph}</p>`).join('')}</div>`;
 }
 
-function toBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-async function materializeAttachments(env, attachments) {
+async function prepareResendAttachments(request, env, attachments) {
+  let totalBytes = 0;
   const result = [];
   for (const attachment of attachments || []) {
-    const object = await env.MAIL_BUCKET.get(attachment.r2Key);
-    if (!object) continue;
+    const byteSize = Number(attachment.byteSize || 0);
+    if (byteSize > MAX_ATTACHMENT_BYTES) {
+      const maxMb = Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024);
+      const error = new Error(`Attachment "${attachment.fileName}" exceeds the ${maxMb} MB limit.`);
+      error.status = 400;
+      throw error;
+    }
+    totalBytes += byteSize;
+    if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+      const maxMb = Math.round(MAX_TOTAL_ATTACHMENT_BYTES / 1024 / 1024);
+      const error = new Error(`Attachments exceed the ${maxMb} MB total limit.`);
+      error.status = 400;
+      throw error;
+    }
     result.push({
       filename: attachment.fileName,
-      content: toBase64(await object.arrayBuffer()),
+      path: await buildAttachmentUrl(request, env, attachment),
     });
   }
   return result;
@@ -1018,7 +1374,7 @@ async function handleSend(request, env, user) {
   if (!to.length) {
     return apiError(400, 'Add at least one valid recipient in the To field.');
   }
-  const attachments = await materializeAttachments(env, payload.attachments || []);
+  const attachments = await prepareResendAttachments(request, env, payload.attachments || []);
   const htmlBody = String(payload.htmlBody || '').trim() || textToEmailHtml(payload.textBody || '');
   const sendResult = await sendResendEmail(resend.secret, {
     from: formatSender(mailbox.display_name, mailbox.email_address),
@@ -1053,6 +1409,19 @@ async function handleSend(request, env, user) {
 
   if (draftId) {
     await deleteDraft(env.DB, user.id, draftId);
+  }
+
+  await publishRealtimeEvent(env, user.id, {
+    type: 'thread.updated',
+    threadId: stored.threadId,
+    folder: 'sent',
+  });
+  if (draftId) {
+    await publishRealtimeEvent(env, user.id, {
+      type: 'draft.updated',
+      draftId,
+      deleted: true,
+    });
   }
 
   return json({ sent: sendResult, stored });
@@ -1135,6 +1504,23 @@ async function handleAttachmentDownload(env, user, attachmentId) {
   return new Response(object.body, { headers });
 }
 
+async function handlePublicAttachment(request, env) {
+  const url = parseUrl(request);
+  const key = url.searchParams.get('key');
+  const exp = Number(url.searchParams.get('exp') || 0);
+  const sig = url.searchParams.get('sig') || '';
+  if (!key || !exp || !sig) return apiError(400, 'Missing attachment signature');
+  if (exp < Math.floor(Date.now() / 1000)) return apiError(403, 'Attachment URL expired');
+  const r2Key = decodeBase64Url(key);
+  const valid = await verifyAttachmentSignature(env, `${r2Key}:${exp}`, sig);
+  if (!valid) return apiError(403, 'Invalid attachment signature');
+  const object = await env.MAIL_BUCKET.get(r2Key);
+  if (!object) return apiError(404, 'Attachment not found');
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  return new Response(object.body, { headers });
+}
+
 function parseOneAddress(value) {
   if (!value) return null;
   if (typeof value === 'object' && value.address) {
@@ -1155,14 +1541,49 @@ function normalizeParsedList(input) {
 }
 
 async function queueIngest(payload, env) {
+  if (payload.userId && await findInboundMessageByRawKey(env.DB, payload.userId, payload.rawKey)) {
+    return;
+  }
   const object = await env.MAIL_BUCKET.get(payload.rawKey);
-  if (!object) return;
+  if (!object) {
+    await recordIngestFailure(env.DB, {
+      userId: payload.userId || null,
+      domainId: payload.domainId || null,
+      recipient: payload.to || '',
+      messageId: payload.messageId || null,
+      rawKey: payload.rawKey,
+      reason: 'raw_message_missing',
+      payload,
+    });
+    if (payload.userId) {
+      await publishRealtimeEvent(env, payload.userId, {
+        type: 'ingest.failed',
+        reason: 'raw_message_missing',
+      });
+    }
+    return;
+  }
   const parser = new PostalMime();
   const parsed = await parser.parse(await object.arrayBuffer());
   const aliasMetadata = payload.userId
     ? payload
     : await getAliasRuleByRecipient(env.DB, payload.to);
   if (!aliasMetadata) {
+    await recordIngestFailure(env.DB, {
+      userId: payload.userId || null,
+      domainId: payload.domainId || null,
+      recipient: payload.to || '',
+      messageId: parsed.messageId || payload.messageId || null,
+      rawKey: payload.rawKey,
+      reason: 'alias_not_found',
+      payload,
+    });
+    if (payload.userId) {
+      await publishRealtimeEvent(env, payload.userId, {
+        type: 'ingest.failed',
+        reason: 'alias_not_found',
+      });
+    }
     console.warn('queue_alias_not_found', { to: payload.to, rawKey: payload.rawKey });
     return;
   }
@@ -1187,10 +1608,10 @@ async function queueIngest(payload, env) {
     });
   }
 
-  await saveInboundMessage(env.DB, {
-    userId: aliasMetadata.user_id || aliasMetadata.userId,
-    domainId: aliasMetadata.domain_id || aliasMetadata.domainId,
-    mailboxId: aliasMetadata.mailbox_id || aliasMetadata.mailboxId,
+    const stored = await saveInboundMessage(env.DB, {
+      userId: aliasMetadata.user_id || aliasMetadata.userId,
+      domainId: aliasMetadata.domain_id || aliasMetadata.domainId,
+      mailboxId: aliasMetadata.mailbox_id || aliasMetadata.mailboxId,
     aliasRuleId: aliasMetadata.id || aliasMetadata.aliasRuleId,
     from: parseOneAddress(parsed.from),
     to: normalizeParsedList(parsed.to),
@@ -1202,16 +1623,45 @@ async function queueIngest(payload, env) {
     inReplyTo: parsed.inReplyTo || null,
     references: Array.isArray(parsed.references) ? parsed.references : [],
     rawKey: payload.rawKey,
-    receivedAt: payload.receivedAt || Date.now(),
-    attachments,
-  });
+      receivedAt: payload.receivedAt || Date.now(),
+      attachments,
+    });
+    await publishRealtimeEvent(env, aliasMetadata.user_id || aliasMetadata.userId, {
+      type: 'thread.updated',
+      threadId: stored.threadId,
+      folder: 'inbox',
+      duplicate: stored.duplicate,
+    });
 }
 
 export default {
   async fetch(request, env) {
     const url = parseUrl(request);
+    if (isApiRequest(url)) {
+      if (request.method === 'OPTIONS') {
+        return createPreflightResponse(request, env);
+      }
+      if (createCorsHeaders(request, env) === false) {
+        return apiError(403, 'Origin not allowed');
+      }
+    }
     if (url.pathname === '/api/runtime-config') {
-      return json(buildRuntimeConfig(env));
+      return withCors(request, env, json(buildRuntimeConfig(env)));
+    }
+
+    if (url.pathname === '/api/public/attachments' && request.method === 'GET') {
+      return withCors(request, env, await handlePublicAttachment(request, env));
+    }
+
+    if (url.pathname === '/api/realtime' && request.method === 'GET') {
+      if (request.headers.get('Upgrade') !== 'websocket') {
+        return apiError(426, 'Expected websocket upgrade');
+      }
+      const { user } = await getRealtimeContext(request, env);
+      const stub = getRealtimeStub(env, user.id);
+      return stub.fetch('https://realtime.internal/connect', {
+        headers: request.headers,
+      });
     }
 
     const parts = parsePath(url);
@@ -1223,80 +1673,80 @@ export default {
       const { user } = await getAuthenticatedContext(request, env);
 
       if (parts[1] === 'bootstrap' && request.method === 'GET') {
-        return json({
+        return withCors(request, env, json({
           user,
           ...(await bootstrapData(env.DB, env, user.id)),
-        });
+        }));
       }
 
       if (parts[1] === 'session' && request.method === 'GET') {
-        return json({ user });
+        return withCors(request, env, json({ user }));
       }
 
       if (parts[1] === 'providers' && parts[2] === 'cloudflare') {
-        return handleCloudflareConnection(request, env, user);
+        return withCors(request, env, await handleCloudflareConnection(request, env, user));
       }
 
       if (parts[1] === 'providers' && parts[2] === 'resend') {
-        return handleResendConnection(request, env, user);
+        return withCors(request, env, await handleResendConnection(request, env, user));
       }
 
       if (parts[1] === 'providers' && parts[2] === 'gemini') {
-        return handleGeminiConnection(request, env, user);
+        return withCors(request, env, await handleGeminiConnection(request, env, user));
       }
 
       if (parts[1] === 'providers' && parts[2] === 'groq') {
-        return handleGroqConnection(request, env, user);
+        return withCors(request, env, await handleGroqConnection(request, env, user));
       }
 
       if (parts[1] === 'cloudflare' && parts[2] === 'zones' && request.method === 'GET') {
-        return handleCloudflareZones(env, user);
+        return withCors(request, env, await handleCloudflareZones(env, user));
       }
 
       if (parts[1] === 'domains') {
-        return handleDomains(request, env, user, parts);
+        return withCors(request, env, await handleDomains(request, env, user, parts));
       }
 
       if (parts[1] === 'mailboxes') {
-        return handleMailboxes(request, env, user, parts);
+        return withCors(request, env, await handleMailboxes(request, env, user, parts));
       }
 
       if (parts[1] === 'forward-destinations') {
-        return handleForwardDestinations(request, env, user);
+        return withCors(request, env, await handleForwardDestinations(request, env, user));
       }
 
       if (parts[1] === 'aliases') {
-        return handleAliases(request, env, user, parts);
+        return withCors(request, env, await handleAliases(request, env, user, parts));
       }
 
       if (parts[1] === 'threads') {
-        return handleThreads(request, env, user, parts);
+        return withCors(request, env, await handleThreads(request, env, user, parts));
       }
 
       if (parts[1] === 'drafts') {
-        return handleDrafts(request, env, user, parts);
+        return withCors(request, env, await handleDrafts(request, env, user, parts));
       }
 
       if (parts[1] === 'uploads' && request.method === 'POST') {
-        return handleUpload(request, env, user);
+        return withCors(request, env, await handleUpload(request, env, user));
       }
 
       if (parts[1] === 'send' && request.method === 'POST') {
-        return handleSend(request, env, user);
+        return withCors(request, env, await handleSend(request, env, user));
       }
 
       if (parts[1] === 'ai' && parts[2] === 'assist' && request.method === 'POST') {
-        return handleAiAssist(request, env, user);
+        return withCors(request, env, await handleAiAssist(request, env, user));
       }
 
       if (parts[1] === 'attachments' && parts[2] && request.method === 'GET') {
-        return handleAttachmentDownload(env, user, parts[2]);
+        return withCors(request, env, await handleAttachmentDownload(env, user, parts[2]));
       }
 
-      return apiError(404, 'Route not found');
+      return withCors(request, env, apiError(404, 'Route not found'));
     } catch (error) {
       console.error('worker_error', error);
-      return apiError(error.status || 500, error.message || 'Internal server error');
+      return withCors(request, env, apiError(error.status || 500, error.message || 'Internal server error'));
     }
   },
 
@@ -1304,7 +1754,24 @@ export default {
     await ensureSchema(env.DB);
     const aliasRule = await getAliasRuleByRecipient(env.DB, message.to);
     if (!aliasRule) {
-      console.warn('email_alias_not_found', { to: message.to });
+      const rawKey = `raw/${Date.now()}-${createId('raw_')}.eml`;
+      const raw = await new Response(message.raw).arrayBuffer();
+      await env.MAIL_BUCKET.put(rawKey, raw, {
+        httpMetadata: {
+          contentType: 'message/rfc822',
+        },
+      });
+      await recordIngestFailure(env.DB, {
+        recipient: message.to || '',
+        messageId: message.headers?.get?.('message-id') || null,
+        rawKey,
+        reason: 'alias_not_found',
+        payload: {
+          to: message.to,
+          from: message.from,
+        },
+      });
+      console.warn('email_alias_not_found', { to: message.to, rawKey });
       return;
     }
 

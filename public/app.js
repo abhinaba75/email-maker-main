@@ -38,6 +38,10 @@ const state = {
     aliases: [],
     drafts: [],
   },
+  alertCounts: {
+    routingDegraded: 0,
+    ingestFailures: 0,
+  },
   selectedSendingDomainId: null,
   sendingDomainId: null,
   sendingStatusMessage: null,
@@ -49,6 +53,11 @@ const state = {
   mailboxEditorId: null,
   status: 'Booting mail console...',
   compose: null,
+  realtime: {
+    socket: null,
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+  },
   easterEggs: {
     unlocked: loadUnlockedEggs(),
     titleClicks: [],
@@ -599,13 +608,25 @@ async function api(path, options = {}) {
   if (!(options.body instanceof FormData)) {
     headers.set('Content-Type', headers.get('Content-Type') || 'application/json');
   }
-  if (state.token) {
-    headers.set('Authorization', `Bearer ${state.token}`);
-  }
-  const response = await fetch(path, {
+  const token = await getFreshToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+
+  let response = await fetch(path, {
     ...options,
     headers,
   });
+  if (response.status === 401 && state.auth?.currentUser) {
+    const retryHeaders = new Headers(options.headers || {});
+    if (!(options.body instanceof FormData)) {
+      retryHeaders.set('Content-Type', retryHeaders.get('Content-Type') || 'application/json');
+    }
+    const refreshedToken = await getFreshToken(true);
+    if (refreshedToken) retryHeaders.set('Authorization', `Bearer ${refreshedToken}`);
+    response = await fetch(path, {
+      ...options,
+      headers: retryHeaders,
+    });
+  }
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
     try {
@@ -621,6 +642,12 @@ async function api(path, options = {}) {
     return response.json();
   }
   return response;
+}
+
+async function getFreshToken(forceRefresh = false) {
+  if (!state.auth?.currentUser) return state.token || '';
+  state.token = await state.auth.currentUser.getIdToken(forceRefresh);
+  return state.token;
 }
 
 async function initFirebase() {
@@ -656,10 +683,11 @@ async function initFirebase() {
       }
     });
 
-    authModule.onAuthStateChanged(auth, async (user) => {
+    authModule.onIdTokenChanged(auth, async (user) => {
       if (!user) {
         state.user = null;
         state.token = '';
+        disconnectRealtime();
         refs.loginOverlay.classList.remove('hidden');
         refs.appShell.classList.add('hidden');
         refs.loginMessage.textContent = 'Sign in to continue.';
@@ -671,6 +699,7 @@ async function initFirebase() {
       refs.appShell.classList.remove('hidden');
       await refreshBootstrap();
       await loadZones();
+      connectRealtime().catch(showError);
     });
   } catch (error) {
     console.error(error);
@@ -685,17 +714,19 @@ async function refreshBootstrap() {
   state.selectedSendingDomainId = payload.selectedSendingDomainId || null;
   state.sendingDomainId = payload.sendingDomainId || null;
   state.sendingStatusMessage = payload.sendingStatusMessage || null;
+  state.alertCounts = payload.alertCounts || { routingDegraded: 0, ingestFailures: 0 };
   state.data = {
     connections: payload.connections || [],
     domains: payload.domains || [],
     mailboxes: payload.mailboxes || [],
-    forwardDestinations: payload.forwardDestinations || [],
-    aliases: payload.aliases || [],
-    drafts: payload.drafts || [],
+    forwardDestinations: [],
+    aliases: [],
+    drafts: [],
   };
   if (state.view === 'mail') {
     await loadThreads();
   } else {
+    await ensureViewData(state.view);
     render();
   }
 }
@@ -707,7 +738,7 @@ async function loadThreads() {
   if (state.mailboxId) query.set('mailboxId', state.mailboxId);
   if (refs.searchBox.value.trim()) query.set('query', refs.searchBox.value.trim());
   const payload = await api(`/api/threads?${query.toString()}`);
-  state.threads = payload.threads || [];
+  state.threads = payload.items || payload.threads || [];
   const selected = state.threads.find((thread) => thread.id === state.selectedThread?.id) || state.threads[0] || null;
   state.selectedThread = null;
   render();
@@ -736,7 +767,34 @@ function switchView(target) {
   }
   state.view = target;
   state.selectedThread = null;
-  render();
+  ensureViewData(target)
+    .then(() => render())
+    .catch(showError);
+}
+
+async function loadAliases() {
+  const payload = await api('/api/aliases?limit=100');
+  state.data.aliases = payload.items || payload.aliases || [];
+}
+
+async function loadForwardDestinationsData() {
+  const payload = await api('/api/forward-destinations?limit=100');
+  state.data.forwardDestinations = payload.items || payload.forwardDestinations || [];
+}
+
+async function loadDrafts() {
+  const payload = await api('/api/drafts?limit=100');
+  state.data.drafts = payload.items || payload.drafts || [];
+}
+
+async function ensureViewData(view = state.view) {
+  if (view === 'aliases') {
+    await Promise.all([loadAliases(), loadForwardDestinationsData()]);
+  } else if (view === 'destinations') {
+    await loadForwardDestinationsData();
+  } else if (view === 'drafts') {
+    await loadDrafts();
+  }
 }
 
 async function loadZones() {
@@ -746,6 +804,73 @@ async function loadZones() {
   } catch {
     state.zones = [];
   }
+}
+
+function disconnectRealtime() {
+  if (state.realtime.reconnectTimer) {
+    window.clearTimeout(state.realtime.reconnectTimer);
+    state.realtime.reconnectTimer = null;
+  }
+  if (state.realtime.socket) {
+    state.realtime.socket.close();
+    state.realtime.socket = null;
+  }
+}
+
+async function handleRealtimeEvent(event) {
+  if (!event?.type) return;
+  if (event.type === 'thread.updated' && state.view === 'mail') {
+    if (state.compose) {
+      setStatus('New mail arrived. Refresh after finishing your draft.');
+      return;
+    }
+    await loadThreads();
+    return;
+  }
+  if (event.type === 'draft.updated' && state.view === 'drafts') {
+    await loadDrafts();
+    render();
+    return;
+  }
+  if (event.type === 'routing.degraded' || event.type === 'routing.updated' || event.type === 'ingest.failed') {
+    await refreshBootstrap();
+    return;
+  }
+}
+
+async function connectRealtime() {
+  if (!state.user) return;
+  disconnectRealtime();
+  const token = await getFreshToken();
+  if (!token) return;
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(`${protocol}//${location.host}/api/realtime?token=${encodeURIComponent(token)}`);
+  state.realtime.socket = socket;
+  socket.addEventListener('open', () => {
+    state.realtime.reconnectAttempts = 0;
+    setStatus('Realtime sync connected.');
+  });
+  socket.addEventListener('message', (message) => {
+    try {
+      const payload = JSON.parse(message.data);
+      handleRealtimeEvent(payload).catch(showError);
+    } catch {
+      // Ignore malformed realtime events.
+    }
+  });
+  socket.addEventListener('close', () => {
+    state.realtime.socket = null;
+    const attempts = state.realtime.reconnectAttempts + 1;
+    state.realtime.reconnectAttempts = attempts;
+    const delay = Math.min(10000, attempts * 1500);
+    state.realtime.reconnectTimer = window.setTimeout(() => {
+      connectRealtime().catch(showError);
+    }, delay);
+    setStatus('Realtime sync disconnected. Reconnecting...');
+  });
+  socket.addEventListener('error', () => {
+    socket.close();
+  });
 }
 
 function renderSidebar() {
@@ -1029,7 +1154,10 @@ function renderDomainsView() {
               return `
                 <tr>
                   <td>${escapeHtml(domain.hostname)}</td>
-                  <td>${escapeHtml(domain.routing_status)}</td>
+                  <td>
+                    ${escapeHtml(domain.routing_status)}
+                    ${domain.routing_error ? `<br><span class="muted">${escapeHtml(domain.routing_error)}</span>` : ''}
+                  </td>
                   <td>${escapeHtml(formatSendCapability(domain.sendCapability || domain.send_capability))}</td>
                   <td>${escapeHtml(domain.resend_status)}</td>
                   <td>${mailboxes.map((mailbox) => escapeHtml(mailbox.email_address)).join('<br>') || '<span class="muted">No mailboxes</span>'}</td>
@@ -1038,6 +1166,7 @@ function renderDomainsView() {
                       ? `<span class="chip">${escapeHtml(actionLabel)}</span>`
                       : `<button class="button select-sending-domain" data-domain="${domain.id}" type="button">${escapeHtml(actionLabel)}</button>`}
                     <button class="button refresh-domain" data-domain="${domain.id}" type="button">Refresh</button>
+                    <button class="button repair-domain" data-domain="${domain.id}" type="button">Repair Routing</button>
                   </td>
                 </tr>
               `;
@@ -1402,6 +1531,31 @@ function renderDraftsView() {
       }
     });
   });
+
+  document.querySelectorAll('.repair-domain').forEach((button) => {
+    button.addEventListener('click', async () => {
+      try {
+        setStatus('Repairing Cloudflare routing...');
+        await api(`/api/domains/${button.dataset.domain}/repair-routing`, { method: 'POST', body: JSON.stringify({}) });
+        await refreshBootstrap();
+        setStatus('Routing repair finished.');
+      } catch (error) {
+        showError(error);
+      }
+    });
+  });
+}
+
+function getAlertSummaryHtml() {
+  const alerts = [];
+  if (state.alertCounts.routingDegraded) {
+    alerts.push(`${state.alertCounts.routingDegraded} routing issue(s) need repair.`);
+  }
+  if (state.alertCounts.ingestFailures) {
+    alerts.push(`${state.alertCounts.ingestFailures} inbound message(s) are quarantined.`);
+  }
+  if (!alerts.length) return '';
+  return `<div class="notice alert-summary">${alerts.map((item) => escapeHtml(item)).join(' ')}</div>`;
 }
 
 function renderContent() {
@@ -1415,6 +1569,11 @@ function renderContent() {
   else if (state.view === 'aliases') renderAliasesView();
   else if (state.view === 'destinations') renderDestinationsView();
   else if (state.view === 'drafts') renderDraftsView();
+
+  const alertHtml = getAlertSummaryHtml();
+  if (alertHtml) {
+    refs.contentView.insertAdjacentHTML('afterbegin', alertHtml);
+  }
 
   refs.sidebarTree.querySelectorAll('[data-view]').forEach((node) => {
     node.addEventListener('click', () => switchView(node.dataset.view));

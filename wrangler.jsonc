@@ -16,6 +16,22 @@
     "directory": "./public",
     "binding": "ASSETS"
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REALTIME_HUB",
+        "class_name": "RealtimeHub"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RealtimeHub"
+      ]
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -45,12 +61,6 @@
     ]
   },
   "vars": {
-    "APP_NAME": "Alias Forge 2000",
-    "INGEST_DOMAIN": "emailonly.indevs.in",
-    "FIREBASE_PROJECT_ID": "email-maker-forge-ad61",
-    "FIREBASE_API_KEY": "AIzaSyBfK7282grn32ZmkPYT-4Kzu-2M-kLaYt4",
-    "FIREBASE_AUTH_DOMAIN": "email-maker-forge-ad61.firebaseapp.com",
-    "FIREBASE_APP_ID": "1:150955610279:web:a3f135ff4101c767f74b82",
-    "FIREBASE_MESSAGING_SENDER_ID": "150955610279"
+    "APP_NAME": "Alias Forge 2000"
   }
 }

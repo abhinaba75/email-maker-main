@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS domains (
   resend_status TEXT NOT NULL DEFAULT 'not_started',
   send_capability TEXT NOT NULL DEFAULT 'send_unavailable',
   routing_status TEXT NOT NULL DEFAULT 'pending',
+  routing_error TEXT,
+  routing_checked_at INTEGER,
   catch_all_mode TEXT NOT NULL DEFAULT 'inbox_only',
   catch_all_mailbox_id TEXT,
   catch_all_forward_json TEXT NOT NULL DEFAULT '[]',
@@ -165,6 +167,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread_created
 CREATE INDEX IF NOT EXISTS idx_messages_message_id
   ON messages(internet_message_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_raw_r2_key
+  ON messages(raw_r2_key)
+  WHERE raw_r2_key IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS attachments (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -203,8 +209,29 @@ CREATE TABLE IF NOT EXISTS drafts (
   FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS ingest_failures (
+  id TEXT PRIMARY KEY,
+  user_id TEXT,
+  domain_id TEXT,
+  recipient TEXT NOT NULL,
+  message_id TEXT,
+  raw_r2_key TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  resolved_at INTEGER,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE SET NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_domains_user ON domains(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_domain ON mailboxes(domain_id, email_address);
 CREATE INDEX IF NOT EXISTS idx_forward_destinations_user ON forward_destinations(user_id, email);
 CREATE INDEX IF NOT EXISTS idx_alias_rules_user ON alias_rules(user_id, domain_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ingest_failures_raw_key_reason
+  ON ingest_failures(raw_r2_key, reason);
+CREATE INDEX IF NOT EXISTS idx_ingest_failures_user_open
+  ON ingest_failures(user_id, resolved_at, last_seen_at DESC);
 `;
