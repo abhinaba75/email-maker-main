@@ -2504,6 +2504,9 @@ async function refreshCurrentView() {
 }
 
 function bindGlobalActions() {
+  document.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+  });
   document.getElementById('newMessageButton').addEventListener('click', () => {
     try {
       openCompose();
