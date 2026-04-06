@@ -12,6 +12,8 @@ const GEMINI_MODEL_OPTIONS = [
   { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
   { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite' },
 ];
+const WORKER_ORIGIN = 'https://alias-forge-2000.abhinaba.workers.dev';
+const BOOT_REQUEST_TIMEOUT_MS = 10000;
 const AI_TONE_OPTIONS = [
   { id: 'professional', label: 'Professional' },
   { id: 'friendly', label: 'Friendly' },
@@ -648,6 +650,56 @@ async function getFreshToken(forceRefresh = false) {
   if (!state.auth?.currentUser) return state.token || '';
   state.token = await state.auth.currentUser.getIdToken(forceRefresh);
   return state.token;
+}
+
+function showBootFailure(message) {
+  refs.bootScreen.classList.add('hidden');
+  refs.loginOverlay.classList.remove('hidden');
+  refs.appShell.classList.add('hidden');
+  refs.loginMessage.textContent = message;
+  setStatus(message);
+}
+
+async function fetchRuntimeConfigFrom(url) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), BOOT_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Runtime config request failed with ${response.status} ${response.statusText}`);
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error('Runtime config returned a non-JSON response');
+    }
+    return await response.json();
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Runtime config request timed out');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function fetchRuntimeConfig() {
+  const primaryUrl = '/api/runtime-config';
+  try {
+    return await fetchRuntimeConfigFrom(primaryUrl);
+  } catch (primaryError) {
+    if (window.location.origin === WORKER_ORIGIN) {
+      throw primaryError;
+    }
+    try {
+      return await fetchRuntimeConfigFrom(`${WORKER_ORIGIN}/api/runtime-config`);
+    } catch (fallbackError) {
+      throw new Error(`${primaryError.message}; fallback failed: ${fallbackError.message}`);
+    }
+  }
 }
 
 async function initFirebase() {
@@ -2424,8 +2476,13 @@ function buildReplyPayload(mode) {
 
 function showError(error) {
   console.error(error);
-  setStatus(error.message || 'An unexpected error occurred.');
-  refs.statusMessage.textContent = error.message || 'An unexpected error occurred.';
+  const message = error?.message || 'An unexpected error occurred.';
+  if (!state.runtime || !refs.bootScreen.classList.contains('hidden')) {
+    showBootFailure(message);
+    return;
+  }
+  setStatus(message);
+  refs.statusMessage.textContent = message;
 }
 
 function bindEasterEggs() {
@@ -2547,10 +2604,9 @@ function bindGlobalActions() {
 async function boot() {
   bindGlobalActions();
   setThemeFlags();
-  state.runtime = await fetch('/api/runtime-config').then((response) => response.json());
+  state.runtime = await fetchRuntimeConfig();
   refs.loginMessage.textContent = 'Ready for Google sign-in.';
   await initFirebase();
-  await loadZones();
   render();
 }
 
