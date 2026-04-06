@@ -1446,13 +1446,25 @@ function stripHtmlToText(html) {
   return container.innerText.replace(/\u00a0/g, ' ').trim();
 }
 
+function preserveSpacesForHtml(text) {
+  return escapeHtml(text).replace(/(^ +| {2,})/g, (segment) => '&nbsp;'.repeat(segment.length));
+}
+
 function textToComposeHtml(text) {
   const normalized = String(text || '').replace(/\r\n/g, '\n');
   if (!normalized.trim()) return '<p><br></p>';
   const paragraphs = normalized
     .split(/\n{2,}/)
-    .map((paragraph) => paragraph.split('\n').map((line) => escapeHtml(line)).join('<br>'));
+    .map((paragraph) => paragraph.split('\n').map((line) => preserveSpacesForHtml(line)).join('<br>'));
   return `<p>${paragraphs.join('</p><p>')}</p>`;
+}
+
+function editorHasRichFormatting(editor) {
+  return Boolean(
+    editor?.querySelector(
+      'a, strong, b, em, i, u, s, strike, blockquote, ul, ol, li, img, table, tr, td, th, thead, tbody, tfoot, hr, span[style], font',
+    ),
+  );
 }
 
 function getComposeDocumentHtml() {
@@ -2075,8 +2087,9 @@ async function syncComposeFromForm(form) {
     textBody = stripHtmlToText(htmlBody);
   } else {
     const editor = getComposeEditor();
-    htmlBody = String(editor?.innerHTML || '').trim();
+    const rawHtml = String(editor?.innerHTML || '').trim();
     textBody = String(editor?.innerText || '').replace(/\u00a0/g, ' ').trim();
+    htmlBody = editorHasRichFormatting(editor) ? rawHtml : textToComposeHtml(textBody);
   }
 
   state.compose = {
