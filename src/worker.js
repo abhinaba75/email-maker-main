@@ -1666,7 +1666,8 @@ export default {
 
     const parts = parsePath(url);
     if (parts[0] !== 'api') {
-      return env.ASSETS.fetch(request);
+      const assetResponse = await env.ASSETS.fetch(request);
+      return withCors(request, env, assetResponse);
     }
 
     try {
