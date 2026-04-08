@@ -14,6 +14,14 @@ const GEMINI_MODEL_OPTIONS = [
 ];
 const WORKER_ORIGIN = 'https://alias-forge-2000.abhinaba.workers.dev';
 const BOOT_REQUEST_TIMEOUT_MS = 10000;
+const API_REQUEST_TIMEOUT_MS = 15000;
+const FALLBACK_FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyBfK7282grn32ZmkPYT-4Kzu-2M-kLaYt4',
+  authDomain: 'email-maker-forge-ad61.firebaseapp.com',
+  projectId: 'email-maker-forge-ad61',
+  appId: '1:150955610279:web:a3f135ff4101c767f74b82',
+  messagingSenderId: '150955610279',
+};
 const AI_TONE_OPTIONS = [
   { id: 'professional', label: 'Professional' },
   { id: 'friendly', label: 'Friendly' },
@@ -613,7 +621,7 @@ async function api(path, options = {}) {
   const token = await getFreshToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
-  let response = await fetch(path, {
+  let response = await fetchWithTimeout(path, {
     ...options,
     headers,
   });
@@ -624,7 +632,7 @@ async function api(path, options = {}) {
     }
     const refreshedToken = await getFreshToken(true);
     if (refreshedToken) retryHeaders.set('Authorization', `Bearer ${refreshedToken}`);
-    response = await fetch(path, {
+    response = await fetchWithTimeout(path, {
       ...options,
       headers: retryHeaders,
     });
@@ -652,6 +660,37 @@ async function getFreshToken(forceRefresh = false) {
   return state.token;
 }
 
+async function fetchWithTimeout(url, init = {}, timeoutMs = API_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`Request timed out for ${url}`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function normalizeFirebaseConfig(config) {
+  const candidate = config || {};
+  return {
+    apiKey: String(candidate.apiKey || FALLBACK_FIREBASE_CONFIG.apiKey || '').trim(),
+    authDomain: String(candidate.authDomain || FALLBACK_FIREBASE_CONFIG.authDomain || '').trim(),
+    projectId: String(candidate.projectId || FALLBACK_FIREBASE_CONFIG.projectId || '').trim(),
+    appId: String(candidate.appId || FALLBACK_FIREBASE_CONFIG.appId || '').trim(),
+    messagingSenderId: String(
+      candidate.messagingSenderId || FALLBACK_FIREBASE_CONFIG.messagingSenderId || '',
+    ).trim(),
+  };
+}
+
 function showBootFailure(message) {
   refs.bootScreen.classList.add('hidden');
   refs.loginOverlay.classList.remove('hidden');
@@ -661,29 +700,21 @@ function showBootFailure(message) {
 }
 
 async function fetchRuntimeConfigFrom(url) {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), BOOT_REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, {
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`Runtime config request failed with ${response.status} ${response.statusText}`);
-    }
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      throw new Error('Runtime config returned a non-JSON response');
-    }
-    return await response.json();
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error('Runtime config request timed out');
-    }
-    throw error;
-  } finally {
-    window.clearTimeout(timeout);
+  const response = await fetchWithTimeout(url, {
+    cache: 'no-store',
+  }, BOOT_REQUEST_TIMEOUT_MS);
+  if (!response.ok) {
+    throw new Error(`Runtime config request failed with ${response.status} ${response.statusText}`);
   }
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('Runtime config returned a non-JSON response');
+  }
+  const payload = await response.json();
+  return {
+    ...payload,
+    firebase: normalizeFirebaseConfig(payload?.firebase),
+  };
 }
 
 async function fetchRuntimeConfig() {
@@ -703,7 +734,8 @@ async function fetchRuntimeConfig() {
 }
 
 async function initFirebase() {
-  const config = state.runtime.firebase;
+  const config = normalizeFirebaseConfig(state.runtime?.firebase);
+  state.runtime.firebase = config;
   refs.bootScreen.classList.add('hidden');
   refs.loginOverlay.classList.remove('hidden');
   refs.appShell.classList.add('hidden');
