@@ -178,6 +178,10 @@ input, select, textarea {
 }
 
 textarea { min-height: 120px; resize: vertical; }
+.template-html-source {
+  min-height: 320px;
+  font-family: Consolas, "Courier New", monospace;
+}
 
 .main-layout {
   flex: 1;
@@ -345,7 +349,7 @@ textarea { min-height: 120px; resize: vertical; }
   border: 0;
   background: #ffffff;
   display: block;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .message-attachments { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }

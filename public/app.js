@@ -1130,14 +1130,15 @@ function resizeMessageFrame(frame) {
   if (!frame) return;
   try {
     const documentNode = frame.contentDocument;
-    const height = Math.max(
+    const contentHeight = Math.max(
       documentNode?.body?.scrollHeight || 0,
       documentNode?.documentElement?.scrollHeight || 0,
-      360,
+      520,
     );
-    frame.style.height = `${Math.min(height + 8, 2400)}px`;
+    const maxVisibleHeight = Math.max(520, window.innerHeight - 280);
+    frame.style.height = `${Math.min(contentHeight + 8, maxVisibleHeight)}px`;
   } catch {
-    frame.style.height = '480px';
+    frame.style.height = `${Math.max(520, window.innerHeight - 280)}px`;
   }
 }
 
@@ -1165,7 +1166,7 @@ function bindMessageFrames() {
       [0, 120, 360, 900, 1800].forEach((delay) => window.setTimeout(() => resizeMessageFrame(frame), delay));
     };
 
-    frame.setAttribute('scrolling', 'no');
+    frame.setAttribute('scrolling', 'auto');
     if (frame.dataset.bound !== 'true') {
       frame.dataset.bound = 'true';
       frame.addEventListener('load', initializeFrame);
@@ -2724,7 +2725,7 @@ function openCompose(payload = null) {
   const mailbox = payload
     ? getMailboxById(payload.mailboxId) || getSelectedSendingMailbox() || getDefaultMailbox()
     : requireSendingMailbox();
-  state.compose = payload || {
+  const baseCompose = {
     id: null,
     domainId: mailbox?.domain_id || null,
     mailboxId: mailbox?.id || null,
@@ -2738,6 +2739,7 @@ function openCompose(payload = null) {
     htmlBody: '',
     attachments: [],
   };
+  state.compose = payload ? { ...baseCompose, ...payload } : baseCompose;
   state.compose = {
     ...state.compose,
     editorMode: payload?.editorMode || inferComposeEditorMode(payload),
