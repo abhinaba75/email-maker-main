@@ -1011,6 +1011,140 @@ function renderSidebar() {
   }
 }
 
+function sanitizeEmailPreviewFragment(html) {
+  const source = String(html || '').trim();
+  if (!source) return { styles: '', body: '' };
+  try {
+    const parser = new DOMParser();
+    const documentNode = parser.parseFromString(source, 'text/html');
+    documentNode.querySelectorAll('script, iframe, object, embed, form, input, button, textarea, select').forEach((node) => node.remove());
+
+    const styleMarkup = Array.from(documentNode.head?.querySelectorAll('style') || [])
+      .map((node) => node.outerHTML)
+      .join('');
+
+    documentNode.querySelectorAll('*').forEach((node) => {
+      Array.from(node.attributes || []).forEach((attribute) => {
+        const name = attribute.name.toLowerCase();
+        const value = String(attribute.value || '');
+        if (name.startsWith('on')) {
+          node.removeAttribute(attribute.name);
+          return;
+        }
+        if (['href', 'src', 'xlink:href', 'action', 'formaction'].includes(name) && /^\s*javascript:/i.test(value)) {
+          node.removeAttribute(attribute.name);
+        }
+      });
+
+      if (node.tagName === 'A') {
+        node.setAttribute('target', '_blank');
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
+    });
+
+    return {
+      styles: styleMarkup,
+      body: documentNode.body?.innerHTML?.trim() || source,
+    };
+  } catch {
+    return { styles: '', body: source };
+  }
+}
+
+function buildEmailPreviewDocument(html) {
+  const fragment = sanitizeEmailPreviewFragment(html);
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <base target="_blank">
+    ${fragment.styles}
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #ffffff;
+      }
+      body {
+        color: #111111;
+        font: 14px/1.5 Arial, sans-serif;
+        overflow-wrap: anywhere;
+      }
+      img {
+        max-width: 100%;
+        height: auto;
+      }
+      table {
+        max-width: 100%;
+      }
+      pre {
+        white-space: pre-wrap;
+      }
+      blockquote {
+        margin: 0 0 0 12px;
+        padding-left: 12px;
+        border-left: 2px solid #c5cede;
+      }
+      a {
+        color: #0a4a7a;
+      }
+    </style>
+  </head>
+  <body>${fragment.body || '<div>(no content)</div>'}</body>
+</html>`;
+}
+
+function getMessagePreviewMarkup(message) {
+  if (String(message.html_body || '').trim()) {
+    return `
+      <div class="message-html-shell">
+        <iframe
+          class="message-html-frame"
+          title="HTML message preview"
+          loading="lazy"
+          sandbox="allow-popups allow-popups-to-escape-sandbox"
+          srcdoc="${escapeHtml(buildEmailPreviewDocument(message.html_body))}"
+        ></iframe>
+      </div>
+    `;
+  }
+  return `<div class="message-body message-body-text">${escapeHtml(message.text_body || message.snippet || '(no content)')}</div>`;
+}
+
+function resizeMessageFrame(frame) {
+  if (!frame) return;
+  try {
+    const documentNode = frame.contentDocument;
+    const height = Math.max(
+      documentNode?.body?.scrollHeight || 0,
+      documentNode?.documentElement?.scrollHeight || 0,
+      360,
+    );
+    frame.style.height = `${Math.min(height + 8, 2400)}px`;
+  } catch {
+    frame.style.height = '480px';
+  }
+}
+
+function bindMessageFrames() {
+  refs.contentView.querySelectorAll('.message-html-frame').forEach((frame) => {
+    if (frame.dataset.bound === 'true') return;
+    frame.dataset.bound = 'true';
+    frame.addEventListener('load', () => {
+      resizeMessageFrame(frame);
+      try {
+        frame.contentDocument?.querySelectorAll('img').forEach((image) => {
+          if (image.complete) return;
+          image.addEventListener('load', () => resizeMessageFrame(frame), { once: true });
+          image.addEventListener('error', () => resizeMessageFrame(frame), { once: true });
+        });
+      } catch {}
+    });
+    window.setTimeout(() => resizeMessageFrame(frame), 0);
+  });
+}
+
 function renderMailView() {
   const mailboxFilter = state.mailboxId ? getMailboxById(state.mailboxId) : null;
   const emptyMessage = state.data.domains.length
@@ -1051,7 +1185,7 @@ function renderMailView() {
                 ${message.cc_json?.length ? `<div><strong>Cc:</strong> ${escapeHtml(formatAddresses(message.cc_json))}</div>` : ''}
                 <div><strong>Date:</strong> ${escapeHtml(formatDateTime(message.sent_at || message.received_at || message.created_at))}</div>
               </div>
-              <div class="message-body">${escapeHtml(message.text_body || message.snippet || '(no content)')}</div>
+              ${getMessagePreviewMarkup(message)}
               ${message.attachments?.length ? `
                 <div class="message-attachments">
                   ${message.attachments.map((attachment) => `
@@ -1650,6 +1784,7 @@ function renderContent() {
   refs.statusUser.textContent = state.user?.email || '';
   refs.statusFolder.textContent = state.view === 'mail' ? state.folder : state.view;
   renderSidebar();
+  refs.contentView.classList.toggle('mail-pane', state.view === 'mail');
 
   if (state.view === 'mail') renderMailView();
   else if (state.view === 'connections') renderConnectionsView();
@@ -1681,6 +1816,7 @@ function renderContent() {
   refs.contentView.querySelectorAll('[data-attachment]').forEach((button) => {
     button.addEventListener('click', () => downloadAttachment(button.dataset.attachment).catch(showError));
   });
+  bindMessageFrames();
 }
 
 function normalizeComposeEditorMode(value) {
