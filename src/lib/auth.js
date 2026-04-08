@@ -97,7 +97,7 @@ async function verifySignature(token, jwk) {
 }
 
 export async function verifyFirebaseToken(token, env) {
-  const projectId = env.FIREBASE_PROJECT_ID;
+  const projectId = env.FIREBASE_PROJECT_ID || env.PUBLIC_FIREBASE_PROJECT_ID;
   if (!projectId) throw new Error('Missing FIREBASE_PROJECT_ID');
   const parsed = parseJwt(token);
   const keys = await getFirebaseJwks();
