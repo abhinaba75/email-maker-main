@@ -1204,6 +1204,23 @@ function updateComposeHtmlPreview() {
   frame.setAttribute('scrolling', 'auto');
 }
 
+function serializeComposePreviewDocument(frame) {
+  const documentNode = frame?.contentDocument;
+  if (!documentNode?.documentElement) return '';
+  try {
+    const body = documentNode.body;
+    if (body) body.removeAttribute('contenteditable');
+    const doctype = documentNode.doctype
+      ? `<!DOCTYPE ${documentNode.doctype.name}>`
+      : '<!DOCTYPE html>';
+    const markup = `${doctype}\n${documentNode.documentElement.outerHTML}`;
+    if (body) body.setAttribute('contenteditable', 'true');
+    return markup;
+  } catch {
+    return '';
+  }
+}
+
 function bindComposeHtmlPreview() {
   const source = document.getElementById('composeHtmlSource');
   const frame = document.getElementById('composeHtmlPreviewFrame');
@@ -1211,6 +1228,23 @@ function bindComposeHtmlPreview() {
 
   const initializeFrame = () => {
     resizeComposePreviewFrame(frame);
+    try {
+      frame.contentDocument.designMode = 'on';
+    } catch {}
+    try {
+      frame.contentDocument.body?.setAttribute('contenteditable', 'true');
+      frame.contentDocument.body?.setAttribute('spellcheck', 'false');
+      const helperStyle = frame.contentDocument.getElementById('composePreviewEditStyle')
+        || frame.contentDocument.createElement('style');
+      helperStyle.id = 'composePreviewEditStyle';
+      helperStyle.textContent = `
+        html, body { min-height: 100%; }
+        body { cursor: text; }
+        body:focus { outline: none; }
+        a { pointer-events: none; }
+      `;
+      frame.contentDocument.head?.appendChild(helperStyle);
+    } catch {}
     try {
       frame.__composeResizeObserver?.disconnect?.();
       frame.__composeResizeObserver = null;
@@ -1234,6 +1268,23 @@ function bindComposeHtmlPreview() {
   if (frame.dataset.bound !== 'true') {
     frame.dataset.bound = 'true';
     frame.addEventListener('load', initializeFrame);
+    frame.addEventListener('load', () => {
+      try {
+        const documentNode = frame.contentDocument;
+        if (documentNode.__composePreviewBound) return;
+        documentNode.__composePreviewBound = true;
+        documentNode.addEventListener('input', () => {
+          const html = serializeComposePreviewDocument(frame);
+          if (!html) return;
+          source.value = html;
+          if (state.compose) {
+            state.compose.htmlBody = html;
+            state.compose.textBody = stripHtmlToText(frame.contentDocument?.body?.innerHTML || '');
+          }
+          scheduleDraftSave();
+        });
+      } catch {}
+    });
   }
 
   source.addEventListener('input', () => {
@@ -2503,7 +2554,7 @@ function renderCompose() {
         <textarea id="composeHtmlSource" class="compose-html-source" spellcheck="false">${escapeHtml(getComposeDocumentHtml())}</textarea>
       </label>
       <div class="compose-html-preview-shell full">
-        <div class="compose-html-preview-head">Rendered Preview</div>
+        <div class="compose-html-preview-head">Rendered Preview (click to edit visually)</div>
         <iframe
           id="composeHtmlPreviewFrame"
           class="compose-html-preview-frame"
