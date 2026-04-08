@@ -660,12 +660,16 @@ textarea { min-height: 120px; resize: vertical; }
   border: 1px solid #93a4c6;
 }
 .compose-mode-switch,
+.compose-template-row,
 .compose-ai-row,
 .compose-format-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: end;
+}
+.compose-template-picker {
+  min-width: min(360px, 100%);
 }
 .compose-mode-button.active {
   background: linear-gradient(180deg, #fff8d6, #f1d98a);
@@ -726,6 +730,27 @@ textarea { min-height: 120px; resize: vertical; }
   resize: vertical;
   font-family: "Lucida Console", "Courier New", monospace;
   line-height: 1.5;
+}
+.compose-html-preview-shell {
+  background: #eef1f7;
+  border: 1px solid #93a4c6;
+  padding: 10px;
+}
+.compose-html-preview-head {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.compose-html-preview-frame {
+  width: 100%;
+  min-height: 420px;
+  border-top: 2px solid var(--chrome-darker);
+  border-left: 2px solid var(--chrome-darker);
+  border-right: 2px solid var(--chrome-light);
+  border-bottom: 2px solid var(--chrome-light);
+  background: #ffffff;
+  display: block;
+  overflow: auto;
 }
 .format-underline { text-decoration: underline; }
 .format-strike { text-decoration: line-through; }

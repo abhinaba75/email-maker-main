@@ -887,6 +887,11 @@ async function loadHtmlTemplates() {
   state.data.htmlTemplates = payload.items || payload.templates || [];
 }
 
+async function ensureHtmlTemplatesLoaded() {
+  if (state.data.htmlTemplates.length || !state.user) return;
+  await loadHtmlTemplates();
+}
+
 async function ensureViewData(view = state.view) {
   if (view === 'domains') {
     await loadHtmlTemplates();
@@ -1173,6 +1178,69 @@ function bindMessageFrames() {
     }
     initializeFrame();
   });
+}
+
+function resizeComposePreviewFrame(frame) {
+  if (!frame) return;
+  try {
+    const documentNode = frame.contentDocument;
+    const contentHeight = Math.max(
+      documentNode?.body?.scrollHeight || 0,
+      documentNode?.documentElement?.scrollHeight || 0,
+      420,
+    );
+    const maxVisibleHeight = Math.max(420, window.innerHeight - 320);
+    frame.style.height = `${Math.min(contentHeight + 8, maxVisibleHeight)}px`;
+  } catch {
+    frame.style.height = `${Math.max(420, window.innerHeight - 320)}px`;
+  }
+}
+
+function updateComposeHtmlPreview() {
+  const source = document.getElementById('composeHtmlSource');
+  const frame = document.getElementById('composeHtmlPreviewFrame');
+  if (!source || !frame) return;
+  frame.srcdoc = buildEmailPreviewDocument(source.value || '<p><br></p>');
+  frame.setAttribute('scrolling', 'auto');
+}
+
+function bindComposeHtmlPreview() {
+  const source = document.getElementById('composeHtmlSource');
+  const frame = document.getElementById('composeHtmlPreviewFrame');
+  if (!source || !frame) return;
+
+  const initializeFrame = () => {
+    resizeComposePreviewFrame(frame);
+    try {
+      frame.__composeResizeObserver?.disconnect?.();
+      frame.__composeResizeObserver = null;
+    } catch {}
+    try {
+      const observer = new ResizeObserver(() => resizeComposePreviewFrame(frame));
+      if (frame.contentDocument?.body) observer.observe(frame.contentDocument.body);
+      if (frame.contentDocument?.documentElement) observer.observe(frame.contentDocument.documentElement);
+      frame.__composeResizeObserver = observer;
+    } catch {}
+    try {
+      frame.contentDocument?.querySelectorAll('img').forEach((image) => {
+        if (image.complete) return;
+        image.addEventListener('load', () => resizeComposePreviewFrame(frame), { once: true });
+        image.addEventListener('error', () => resizeComposePreviewFrame(frame), { once: true });
+      });
+    } catch {}
+    [0, 120, 360, 900].forEach((delay) => window.setTimeout(() => resizeComposePreviewFrame(frame), delay));
+  };
+
+  if (frame.dataset.bound !== 'true') {
+    frame.dataset.bound = 'true';
+    frame.addEventListener('load', initializeFrame);
+  }
+
+  source.addEventListener('input', () => {
+    updateComposeHtmlPreview();
+  });
+
+  updateComposeHtmlPreview();
 }
 
 function renderMailView() {
@@ -2189,6 +2257,41 @@ function replaceComposeSelection(selection, replacementText) {
   replaceRichSelection(selection.range, textToComposeHtml(replacementText));
 }
 
+async function applyComposeTemplate(templateId) {
+  if (!templateId) {
+    throw new Error('Choose an HTML template first.');
+  }
+  await ensureHtmlTemplatesLoaded();
+  const template = getHtmlTemplateById(templateId);
+  if (!template) {
+    throw new Error('Selected HTML template could not be found.');
+  }
+  const form = document.getElementById('composeForm');
+  if (form) {
+    await syncComposeFromForm(form);
+  }
+  const hasExistingContent = Boolean(
+    String(state.compose?.subject || '').trim()
+    || String(state.compose?.textBody || '').trim()
+    || String(state.compose?.htmlBody || '').trim(),
+  );
+  if (hasExistingContent) {
+    const confirmed = window.confirm(`Replace the current draft content with "${template.name}"?`);
+    if (!confirmed) return;
+  }
+  state.compose = {
+    ...state.compose,
+    subject: template.subject || '',
+    htmlBody: template.html_content || '',
+    textBody: stripHtmlToText(template.html_content || ''),
+    editorMode: 'html',
+    templateId: template.id,
+  };
+  renderCompose();
+  scheduleDraftSave();
+  setStatus(`Applied template "${template.name}" to compose.`);
+}
+
 function updateComposeFieldsFromAi(result) {
   const subjectInput = document.querySelector('#composeForm [name="subject"]');
   if (subjectInput && typeof result.subject === 'string') {
@@ -2383,12 +2486,31 @@ function renderCompose() {
       </label>
     `;
   const aiDisabledAttr = aiEnabled ? 'false' : 'true';
+  const htmlTemplateOptions = state.data.htmlTemplates.length
+    ? `
+      <option value="">Choose a saved template</option>
+      ${state.data.htmlTemplates.map((template) => `
+        <option value="${template.id}" ${template.id === state.compose.templateId ? 'selected' : ''}>
+          ${escapeHtml(template.name)}
+        </option>
+      `).join('')}
+    `
+    : '<option value="">No saved templates yet</option>';
   const composeBodyMarkup = state.compose.editorMode === 'html'
     ? `
       <label class="label full">
         HTML Source
         <textarea id="composeHtmlSource" class="compose-html-source" spellcheck="false">${escapeHtml(getComposeDocumentHtml())}</textarea>
       </label>
+      <div class="compose-html-preview-shell full">
+        <div class="compose-html-preview-head">Rendered Preview</div>
+        <iframe
+          id="composeHtmlPreviewFrame"
+          class="compose-html-preview-frame"
+          title="Rendered HTML email preview"
+          sandbox="allow-popups allow-popups-to-escape-sandbox"
+        ></iframe>
+      </div>
     `
     : `
       <label class="label full">
@@ -2433,6 +2555,15 @@ function renderCompose() {
               <div class="compose-mode-switch">
                 <button class="button compose-mode-button ${state.compose.editorMode === 'rich' ? 'active' : ''}" data-compose-mode="rich" type="button">Design</button>
                 <button class="button compose-mode-button ${state.compose.editorMode === 'html' ? 'active' : ''}" data-compose-mode="html" type="button">HTML</button>
+              </div>
+              <div class="compose-template-row">
+                <label class="label compact compose-template-picker">
+                  Template
+                  <select id="composeTemplateSelect">
+                    ${htmlTemplateOptions}
+                  </select>
+                </label>
+                <button class="button" id="applyComposeTemplateButton" type="button" ${state.data.htmlTemplates.length ? '' : 'disabled'}>Apply Template</button>
               </div>
               <div class="compose-ai-row">
                 <label class="label compact">
@@ -2522,6 +2653,10 @@ function renderCompose() {
   document.querySelectorAll('.compose-ai-button').forEach((button) => {
     button.addEventListener('click', () => runComposeAiAction(button.dataset.aiAction).catch(showError));
   });
+  document.getElementById('applyComposeTemplateButton')?.addEventListener('click', () => {
+    const templateId = document.getElementById('composeTemplateSelect')?.value || '';
+    applyComposeTemplate(templateId).catch(showError);
+  });
   document.querySelectorAll('.compose-format-button').forEach((button) => {
     button.addEventListener('mousedown', (event) => event.preventDefault());
     button.addEventListener('click', () => {
@@ -2579,6 +2714,7 @@ function renderCompose() {
     form.addEventListener('input', scheduleDraftSave, { passive: true });
     form.addEventListener('change', scheduleDraftSave, { passive: true });
   }
+  bindComposeHtmlPreview();
 }
 
 function render() {
@@ -2747,8 +2883,14 @@ function openCompose(payload = null) {
     aiModel: payload?.aiModel || getDefaultGeminiModel(),
     aiTone: payload?.aiTone || 'professional',
     aiPrompt: payload?.aiPrompt || '',
+    templateId: payload?.templateId || null,
   };
   renderCompose();
+  ensureHtmlTemplatesLoaded()
+    .then(() => {
+      if (state.compose) renderCompose();
+    })
+    .catch(showError);
 }
 
 async function downloadAttachment(attachmentId) {
