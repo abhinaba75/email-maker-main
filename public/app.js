@@ -1180,118 +1180,101 @@ function bindMessageFrames() {
   });
 }
 
-function resizeComposePreviewFrame(frame) {
-  if (!frame) return;
-  try {
-    const documentNode = frame.contentDocument;
-    const contentHeight = Math.max(
-      documentNode?.body?.scrollHeight || 0,
-      documentNode?.documentElement?.scrollHeight || 0,
-      420,
-    );
-    const maxVisibleHeight = Math.max(420, window.innerHeight - 320);
-    frame.style.height = `${Math.min(contentHeight + 8, maxVisibleHeight)}px`;
-  } catch {
-    frame.style.height = `${Math.max(420, window.innerHeight - 320)}px`;
-  }
+function buildComposeEditableDocument(bodyMarkup, styleMarkup) {
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    ${styleMarkup || ''}
+  </head>
+  <body>${bodyMarkup || '<p><br></p>'}</body>
+</html>`;
 }
 
-function updateComposeHtmlPreview() {
+function serializeComposePreviewDocument(host) {
+  const shadow = host?.shadowRoot;
+  if (!shadow) return '';
+  const canvas = shadow.getElementById('composePreviewCanvas');
+  const styleMarkup = Array.from(shadow.querySelectorAll('style[data-email-style="true"]'))
+    .map((node) => node.outerHTML)
+    .join('');
+  return buildComposeEditableDocument(canvas?.innerHTML || '', styleMarkup);
+}
+
+function renderComposeHtmlPreview() {
   const source = document.getElementById('composeHtmlSource');
-  const frame = document.getElementById('composeHtmlPreviewFrame');
-  if (!source || !frame) return;
-  frame.srcdoc = buildEmailPreviewDocument(source.value || '<p><br></p>');
-  frame.setAttribute('scrolling', 'auto');
-}
-
-function serializeComposePreviewDocument(frame) {
-  const documentNode = frame?.contentDocument;
-  if (!documentNode?.documentElement) return '';
-  try {
-    const body = documentNode.body;
-    if (body) body.removeAttribute('contenteditable');
-    const doctype = documentNode.doctype
-      ? `<!DOCTYPE ${documentNode.doctype.name}>`
-      : '<!DOCTYPE html>';
-    const markup = `${doctype}\n${documentNode.documentElement.outerHTML}`;
-    if (body) body.setAttribute('contenteditable', 'true');
-    return markup;
-  } catch {
-    return '';
-  }
+  const host = document.getElementById('composeHtmlPreviewHost');
+  if (!source || !host) return;
+  const fragment = sanitizeEmailPreviewFragment(source.value || '<p><br></p>');
+  const styleMarkup = String(fragment.styles || '').replace(/<style\b/gi, '<style data-email-style="true"');
+  const shadow = host.shadowRoot || host.attachShadow({ mode: 'open' });
+  shadow.innerHTML = `
+    <style>
+      :host {
+        display: block;
+        min-height: 420px;
+        max-height: max(420px, calc(100vh - 320px));
+        overflow: auto;
+        background: #ffffff;
+        color: #111111;
+        font: 14px/1.5 Arial, sans-serif;
+      }
+      *, *::before, *::after {
+        box-sizing: border-box;
+      }
+      #composePreviewCanvas {
+        min-height: 420px;
+        outline: none;
+        cursor: text;
+      }
+      #composePreviewCanvas:focus {
+        outline: none;
+      }
+      img {
+        max-width: 100%;
+        height: auto;
+      }
+      table {
+        max-width: 100%;
+      }
+      pre {
+        white-space: pre-wrap;
+      }
+      blockquote {
+        margin: 0 0 0 12px;
+        padding-left: 12px;
+        border-left: 2px solid #c5cede;
+      }
+      a {
+        pointer-events: none;
+      }
+    </style>
+    ${styleMarkup}
+    <div id="composePreviewCanvas" contenteditable="true" spellcheck="false">${fragment.body || '<p><br></p>'}</div>
+  `;
+  const canvas = shadow.getElementById('composePreviewCanvas');
+  if (!canvas) return;
+  canvas.addEventListener('input', () => {
+    const html = serializeComposePreviewDocument(host);
+    if (!html) return;
+    source.value = html;
+    if (state.compose) {
+      state.compose.htmlBody = html;
+      state.compose.textBody = stripHtmlToText(canvas.innerHTML || '');
+    }
+    scheduleDraftSave();
+  });
 }
 
 function bindComposeHtmlPreview() {
   const source = document.getElementById('composeHtmlSource');
-  const frame = document.getElementById('composeHtmlPreviewFrame');
-  if (!source || !frame) return;
-
-  const initializeFrame = () => {
-    resizeComposePreviewFrame(frame);
-    try {
-      frame.contentDocument.designMode = 'on';
-    } catch {}
-    try {
-      frame.contentDocument.body?.setAttribute('contenteditable', 'true');
-      frame.contentDocument.body?.setAttribute('spellcheck', 'false');
-      const helperStyle = frame.contentDocument.getElementById('composePreviewEditStyle')
-        || frame.contentDocument.createElement('style');
-      helperStyle.id = 'composePreviewEditStyle';
-      helperStyle.textContent = `
-        html, body { min-height: 100%; }
-        body { cursor: text; }
-        body:focus { outline: none; }
-        a { pointer-events: none; }
-      `;
-      frame.contentDocument.head?.appendChild(helperStyle);
-    } catch {}
-    try {
-      frame.__composeResizeObserver?.disconnect?.();
-      frame.__composeResizeObserver = null;
-    } catch {}
-    try {
-      const observer = new ResizeObserver(() => resizeComposePreviewFrame(frame));
-      if (frame.contentDocument?.body) observer.observe(frame.contentDocument.body);
-      if (frame.contentDocument?.documentElement) observer.observe(frame.contentDocument.documentElement);
-      frame.__composeResizeObserver = observer;
-    } catch {}
-    try {
-      frame.contentDocument?.querySelectorAll('img').forEach((image) => {
-        if (image.complete) return;
-        image.addEventListener('load', () => resizeComposePreviewFrame(frame), { once: true });
-        image.addEventListener('error', () => resizeComposePreviewFrame(frame), { once: true });
-      });
-    } catch {}
-    [0, 120, 360, 900].forEach((delay) => window.setTimeout(() => resizeComposePreviewFrame(frame), delay));
-  };
-
-  if (frame.dataset.bound !== 'true') {
-    frame.dataset.bound = 'true';
-    frame.addEventListener('load', initializeFrame);
-    frame.addEventListener('load', () => {
-      try {
-        const documentNode = frame.contentDocument;
-        if (documentNode.__composePreviewBound) return;
-        documentNode.__composePreviewBound = true;
-        documentNode.addEventListener('input', () => {
-          const html = serializeComposePreviewDocument(frame);
-          if (!html) return;
-          source.value = html;
-          if (state.compose) {
-            state.compose.htmlBody = html;
-            state.compose.textBody = stripHtmlToText(frame.contentDocument?.body?.innerHTML || '');
-          }
-          scheduleDraftSave();
-        });
-      } catch {}
-    });
-  }
-
+  const host = document.getElementById('composeHtmlPreviewHost');
+  if (!source || !host) return;
   source.addEventListener('input', () => {
-    updateComposeHtmlPreview();
+    renderComposeHtmlPreview();
   });
-
-  updateComposeHtmlPreview();
+  renderComposeHtmlPreview();
 }
 
 function renderMailView() {
@@ -2555,12 +2538,11 @@ function renderCompose() {
       </label>
       <div class="compose-html-preview-shell full">
         <div class="compose-html-preview-head">Rendered Preview (click to edit visually)</div>
-        <iframe
-          id="composeHtmlPreviewFrame"
-          class="compose-html-preview-frame"
-          title="Rendered HTML email preview"
-          sandbox="allow-popups allow-popups-to-escape-sandbox"
-        ></iframe>
+        <div
+          id="composeHtmlPreviewHost"
+          class="compose-html-preview-host"
+          aria-label="Rendered HTML email preview"
+        ></div>
       </div>
     `
     : `

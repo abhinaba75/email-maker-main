@@ -741,7 +741,7 @@ textarea { min-height: 120px; resize: vertical; }
   font-size: 12px;
   font-weight: 700;
 }
-.compose-html-preview-frame {
+.compose-html-preview-host {
   width: 100%;
   min-height: 420px;
   border-top: 2px solid var(--chrome-darker);
