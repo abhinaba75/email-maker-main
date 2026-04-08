@@ -103,6 +103,9 @@ const DEFAULT_ALLOWED_ORIGINS = new Set([
   'http://127.0.0.1:5173',
   'http://localhost:8787',
   'http://127.0.0.1:8787',
+  'https://email.itsabhinaba.in',
+  'https://emailbye075.vercel.app',
+  'https://emailmakerbye075.vercel.app',
 ]);
 const PUBLIC_ATTACHMENT_TTL_SECONDS = 300;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -132,11 +135,24 @@ function getAllowedOrigins(env, requestOrigin) {
   return allowedOrigins;
 }
 
+function getForwardedOrigin(request) {
+  const proto = request.headers.get('x-forwarded-proto') || 'https';
+  const host = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
+  if (!host) return null;
+  try {
+    return new URL(`${proto}://${host}`).origin;
+  } catch {
+    return null;
+  }
+}
+
 function createCorsHeaders(request, env) {
   const requestOrigin = new URL(request.url).origin;
   const origin = request.headers.get('origin');
   if (!origin) return null;
   const allowedOrigins = getAllowedOrigins(env, requestOrigin);
+  const forwardedOrigin = getForwardedOrigin(request);
+  if (forwardedOrigin) allowedOrigins.add(forwardedOrigin);
   if (!allowedOrigins.has(origin)) return false;
   return {
     'Access-Control-Allow-Origin': origin,
