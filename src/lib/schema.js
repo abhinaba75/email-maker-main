@@ -209,6 +209,19 @@ CREATE TABLE IF NOT EXISTS drafts (
   FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS html_templates (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  domain_id TEXT,
+  name TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  html_content TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS ingest_failures (
   id TEXT PRIMARY KEY,
   user_id TEXT,
@@ -228,6 +241,7 @@ CREATE TABLE IF NOT EXISTS ingest_failures (
 
 CREATE INDEX IF NOT EXISTS idx_domains_user ON domains(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_domain ON mailboxes(domain_id, email_address);
+CREATE INDEX IF NOT EXISTS idx_html_templates_user ON html_templates(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_forward_destinations_user ON forward_destinations(user_id, email);
 CREATE INDEX IF NOT EXISTS idx_alias_rules_user ON alias_rules(user_id, domain_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ingest_failures_raw_key_reason

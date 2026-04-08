@@ -44,6 +44,7 @@ const state = {
     connections: [],
     domains: [],
     mailboxes: [],
+    htmlTemplates: [],
     forwardDestinations: [],
     aliases: [],
     drafts: [],
@@ -61,6 +62,7 @@ const state = {
   folder: 'inbox',
   mailboxId: null,
   mailboxEditorId: null,
+  htmlTemplateEditorId: null,
   status: 'Booting mail console...',
   compose: null,
   realtime: {
@@ -281,10 +283,10 @@ function triggerBlueScreen() {
 function showWinverDialog() {
   unlockEgg('winver-dialog', 'Winver', 'Version information unlocked.');
   showEggDialog(
-    'About EmailRouter by e075',
+    'About Email By Abhinaba Das',
     `
-      <p>EmailRouter by e075<br>Version 2.0.0.2000</p>
-      <p>Alias Forge 2000 shell with forwarding, inboxing, and hidden operator toys.</p>
+      <p>Email By Abhinaba Das<br>Version 2.0.0.2000</p>
+      <p>Classic mail shell with forwarding, inboxing, and hidden operator toys.</p>
       <p>Secrets discovered: ${state.easterEggs.unlocked.size} / ${EASTER_EGG_TOTAL}</p>
     `,
   );
@@ -497,6 +499,10 @@ function getMailboxById(id) {
 
 function getDomainById(id) {
   return state.data.domains.find((domain) => domain.id === id) || null;
+}
+
+function getHtmlTemplateById(id) {
+  return state.data.htmlTemplates.find((template) => template.id === id) || null;
 }
 
 function getConnectionByProvider(provider) {
@@ -807,6 +813,7 @@ async function refreshBootstrap() {
     connections: payload.connections || [],
     domains: payload.domains || [],
     mailboxes: payload.mailboxes || [],
+    htmlTemplates: [],
     forwardDestinations: [],
     aliases: [],
     drafts: [],
@@ -875,8 +882,15 @@ async function loadDrafts() {
   state.data.drafts = payload.items || payload.drafts || [];
 }
 
+async function loadHtmlTemplates() {
+  const payload = await api('/api/html-templates?limit=100');
+  state.data.htmlTemplates = payload.items || payload.templates || [];
+}
+
 async function ensureViewData(view = state.view) {
-  if (view === 'aliases') {
+  if (view === 'domains') {
+    await loadHtmlTemplates();
+  } else if (view === 'aliases') {
     await Promise.all([loadAliases(), loadForwardDestinationsData()]);
   } else if (view === 'destinations') {
     await loadForwardDestinationsData();
@@ -1129,10 +1143,18 @@ function resizeMessageFrame(frame) {
 
 function bindMessageFrames() {
   refs.contentView.querySelectorAll('.message-html-frame').forEach((frame) => {
-    if (frame.dataset.bound === 'true') return;
-    frame.dataset.bound = 'true';
-    frame.addEventListener('load', () => {
+    const initializeFrame = () => {
       resizeMessageFrame(frame);
+      try {
+        frame.__messageResizeObserver?.disconnect?.();
+        frame.__messageResizeObserver = null;
+      } catch {}
+      try {
+        const observer = new ResizeObserver(() => resizeMessageFrame(frame));
+        if (frame.contentDocument?.body) observer.observe(frame.contentDocument.body);
+        if (frame.contentDocument?.documentElement) observer.observe(frame.contentDocument.documentElement);
+        frame.__messageResizeObserver = observer;
+      } catch {}
       try {
         frame.contentDocument?.querySelectorAll('img').forEach((image) => {
           if (image.complete) return;
@@ -1140,8 +1162,15 @@ function bindMessageFrames() {
           image.addEventListener('error', () => resizeMessageFrame(frame), { once: true });
         });
       } catch {}
-    });
-    window.setTimeout(() => resizeMessageFrame(frame), 0);
+      [0, 120, 360, 900, 1800].forEach((delay) => window.setTimeout(() => resizeMessageFrame(frame), delay));
+    };
+
+    frame.setAttribute('scrolling', 'no');
+    if (frame.dataset.bound !== 'true') {
+      frame.dataset.bound = 'true';
+      frame.addEventListener('load', initializeFrame);
+    }
+    initializeFrame();
   });
 }
 
@@ -1340,6 +1369,7 @@ function renderConnectionsView() {
 
 function renderDomainsView() {
   const editingMailbox = state.mailboxEditorId ? getMailboxById(state.mailboxEditorId) : null;
+  const editingTemplate = state.htmlTemplateEditorId ? getHtmlTemplateById(state.htmlTemplateEditorId) : null;
   refs.contentView.innerHTML = `
     <div class="stack">
       <section class="property-sheet">
@@ -1355,7 +1385,7 @@ function renderDomainsView() {
           <label class="label">Mail Hostname<input name="hostname" placeholder="mail.example.com or example.com"></label>
           <label class="label">Label<input name="label" placeholder="Primary Brand Mail"></label>
           <label class="label">Default Sender Local Part<input name="defaultMailboxLocalPart" value="admin"></label>
-          <label class="label full">Display Name<input name="displayName" placeholder="Alias Forge Operator"></label>
+          <label class="label full">Display Name<input name="displayName" placeholder="Abhinaba Das"></label>
           <div class="full"><button class="button primary" type="submit">Provision Domain</button></div>
         </form>
         <div class="notice">
@@ -1447,6 +1477,56 @@ function renderDomainsView() {
           </div>
         </form>
         <div class="notice">Default sender preference only matters on the selected sending domain. Receive-only domains still work for inboxes, aliases, and forwarding.</div>
+      </section>
+
+      <section class="property-sheet">
+        <div class="property-title">HTML Template Saver</div>
+        <div class="notice">Save reusable HTML email layouts here. Templates are private to your signed-in account and can be linked to a domain for organization or reused across any sending domain.</div>
+        <table class="grid-table">
+          <thead>
+            <tr><th>Name</th><th>Domain</th><th>Subject</th><th>Updated</th><th>Action</th></tr>
+          </thead>
+          <tbody>
+            ${state.data.htmlTemplates.map((template) => {
+              const domain = template.domain_id ? getDomainById(template.domain_id) : null;
+              return `
+                <tr class="${template.id === editingTemplate?.id ? 'mailbox-row-active' : ''}">
+                  <td>${escapeHtml(template.name)}</td>
+                  <td>${escapeHtml(domain?.hostname || 'Any sending domain')}</td>
+                  <td>${escapeHtml(template.subject || '(no subject preset)')}</td>
+                  <td>${escapeHtml(formatDateTime(template.updated_at || template.created_at))}</td>
+                  <td class="inline-actions">
+                    <button class="button use-html-template" data-template="${template.id}" type="button">Use in Compose</button>
+                    <button class="button edit-html-template" data-template="${template.id}" type="button">Edit</button>
+                    <button class="button delete-html-template" data-template="${template.id}" type="button">Delete</button>
+                  </td>
+                </tr>
+              `;
+            }).join('') || '<tr><td colspan="5" class="muted">No HTML templates saved yet.</td></tr>'}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="property-sheet">
+        <div class="property-title">${editingTemplate ? `Template Editor: ${escapeHtml(editingTemplate.name)}` : 'Save HTML Template'}</div>
+        <form id="htmlTemplateForm" class="form-grid">
+          <input type="hidden" name="templateId" value="${escapeHtml(editingTemplate?.id || '')}">
+          <label class="label">
+            Domain
+            <select name="domainId">
+              <option value="">Any sending domain</option>
+              ${state.data.domains.map((domain) => `<option value="${domain.id}" ${domain.id === editingTemplate?.domain_id ? 'selected' : ''}>${escapeHtml(domain.hostname)}</option>`).join('')}
+            </select>
+          </label>
+          <label class="label">Template Name<input name="name" placeholder="Quarterly announcement" value="${escapeHtml(editingTemplate?.name || '')}"></label>
+          <label class="label full">Preset Subject<input name="subject" placeholder="Important update from our team" value="${escapeHtml(editingTemplate?.subject || '')}"></label>
+          <label class="label full">HTML Markup<textarea class="template-html-source" name="htmlContent" placeholder="<table>...</table>">${escapeHtml(editingTemplate?.html_content || '')}</textarea></label>
+          <div class="full inline-actions">
+            <button class="button primary" type="submit">${editingTemplate ? 'Save Template' : 'Create Template'}</button>
+            ${editingTemplate ? '<button class="button" type="button" id="cancelTemplateEditButton">Cancel</button>' : ''}
+          </div>
+        </form>
+        <div class="notice">Use saved templates to start a compose window directly in HTML mode. The raw markup is preserved exactly as stored here.</div>
       </section>
     </div>
   `;
@@ -1764,6 +1844,79 @@ function renderDraftsView() {
       } catch (error) {
         showError(error);
       }
+    });
+  });
+
+  document.getElementById('htmlTemplateForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const templateId = String(form.get('templateId') || '').trim();
+    const body = {
+      domainId: String(form.get('domainId') || '').trim() || null,
+      name: String(form.get('name') || '').trim(),
+      subject: String(form.get('subject') || '').trim(),
+      htmlContent: String(form.get('htmlContent') || ''),
+    };
+    try {
+      setStatus(templateId ? 'Saving HTML template...' : 'Creating HTML template...');
+      await api(templateId ? `/api/html-templates/${templateId}` : '/api/html-templates', {
+        method: templateId ? 'PATCH' : 'POST',
+        body: JSON.stringify(body),
+      });
+      state.htmlTemplateEditorId = null;
+      await loadHtmlTemplates();
+      renderDomainsView();
+      setStatus(templateId ? 'HTML template updated.' : 'HTML template created.');
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  document.getElementById('cancelTemplateEditButton')?.addEventListener('click', () => {
+    state.htmlTemplateEditorId = null;
+    renderDomainsView();
+  });
+
+  document.querySelectorAll('.edit-html-template').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.htmlTemplateEditorId = button.dataset.template;
+      renderDomainsView();
+      document.getElementById('htmlTemplateForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+
+  document.querySelectorAll('.delete-html-template').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const template = getHtmlTemplateById(button.dataset.template);
+      if (!template) return;
+      const confirmed = window.confirm(`Delete HTML template "${template.name}"?`);
+      if (!confirmed) return;
+      try {
+        setStatus('Deleting HTML template...');
+        await api(`/api/html-templates/${template.id}`, { method: 'DELETE' });
+        if (state.htmlTemplateEditorId === template.id) {
+          state.htmlTemplateEditorId = null;
+        }
+        await loadHtmlTemplates();
+        renderDomainsView();
+        setStatus('HTML template deleted.');
+      } catch (error) {
+        showError(error);
+      }
+    });
+  });
+
+  document.querySelectorAll('.use-html-template').forEach((button) => {
+    button.addEventListener('click', () => {
+      const template = getHtmlTemplateById(button.dataset.template);
+      if (!template) return;
+      openCompose({
+        subject: template.subject || '',
+        htmlBody: template.html_content || '',
+        textBody: stripHtmlToText(template.html_content || ''),
+        editorMode: 'html',
+      });
+      setStatus(`Loaded template "${template.name}" into compose.`);
     });
   });
 }

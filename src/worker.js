@@ -4,10 +4,12 @@ import {
   applyThreadAction,
   createAliasRule,
   createDomain,
+  createHtmlTemplate,
   createMailbox,
   deleteMailbox,
   deleteAliasRule,
   deleteDraft,
+  deleteHtmlTemplate,
   ensureSchema,
   findInboundMessageByRawKey,
   getAliasRule,
@@ -17,6 +19,7 @@ import {
   getConnection,
   getDomain,
   getDraft,
+  getHtmlTemplate,
   getMailbox,
   getMailboxDependencySummary,
   getThread,
@@ -28,6 +31,7 @@ import {
   listDraftsPage,
   listForwardDestinations,
   listForwardDestinationsPage,
+  listHtmlTemplatesPage,
   listMailboxes,
   listMailboxesPage,
   listThreads,
@@ -40,6 +44,7 @@ import {
   saveOutgoingMessage,
   updateAliasRule,
   updateDomain,
+  updateHtmlTemplate,
   updateMailbox,
   updateUserSelectedSendingDomain,
   upsertForwardDestination,
@@ -105,7 +110,7 @@ const MAX_TOTAL_ATTACHMENT_BYTES = 35 * 1024 * 1024;
 
 function buildRuntimeConfig(env) {
   return {
-    appName: env.APP_NAME || 'Alias Forge 2000',
+    appName: env.APP_NAME || 'Email By Abhinaba Das',
     firebase: {
       apiKey: env.PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || '',
       authDomain: env.PUBLIC_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || '',
@@ -930,6 +935,70 @@ async function handleMailboxes(request, env, user, pathParts) {
   return apiError(405, 'Unsupported mailbox route');
 }
 
+async function handleHtmlTemplates(request, env, user, pathParts) {
+  if (request.method === 'GET' && pathParts.length === 2) {
+    const url = parseUrl(request);
+    const page = await listHtmlTemplatesPage(env.DB, user.id, {
+      domainId: url.searchParams.get('domainId'),
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+    });
+    return json({
+      items: page.items,
+      nextCursor: page.nextCursor,
+      templates: page.items,
+    });
+  }
+
+  if (request.method === 'POST' && pathParts.length === 2) {
+    const body = await readJson(request);
+    const domainId = String(body.domainId || '').trim() || null;
+    if (domainId) {
+      const domain = await getDomain(env.DB, user.id, domainId);
+      if (!domain) return apiError(404, 'Domain not found');
+    }
+    const name = String(body.name || '').trim();
+    if (!name) return apiError(400, 'Template name is required');
+    const template = await createHtmlTemplate(env.DB, {
+      userId: user.id,
+      domainId,
+      name,
+      subject: String(body.subject || '').trim(),
+      htmlContent: String(body.htmlContent || ''),
+    });
+    return json({ template }, { status: 201 });
+  }
+
+  if ((request.method === 'PATCH' || request.method === 'PUT') && pathParts.length === 3) {
+    const current = await getHtmlTemplate(env.DB, user.id, pathParts[2]);
+    if (!current) return apiError(404, 'Template not found');
+    const body = await readJson(request);
+    const nextDomainId = body.domainId === undefined
+      ? current.domain_id
+      : (String(body.domainId || '').trim() || null);
+    if (nextDomainId) {
+      const domain = await getDomain(env.DB, user.id, nextDomainId);
+      if (!domain) return apiError(404, 'Domain not found');
+    }
+    const template = await updateHtmlTemplate(env.DB, user.id, pathParts[2], {
+      domainId: nextDomainId,
+      name: body.name === undefined ? current.name : String(body.name || '').trim(),
+      subject: body.subject === undefined ? current.subject : String(body.subject || '').trim(),
+      htmlContent: body.htmlContent === undefined ? current.html_content : String(body.htmlContent || ''),
+    });
+    if (!template?.name) return apiError(400, 'Template name is required');
+    return json({ template });
+  }
+
+  if (request.method === 'DELETE' && pathParts.length === 3) {
+    const template = await deleteHtmlTemplate(env.DB, user.id, pathParts[2]);
+    if (!template) return apiError(404, 'Template not found');
+    return json({ template, ok: true });
+  }
+
+  return apiError(405, 'Unsupported HTML template route');
+}
+
 async function handleForwardDestinations(request, env, user) {
   const cf = await loadSecret(env.DB, env, user.id, 'cloudflare');
   if (request.method === 'GET') {
@@ -1727,6 +1796,10 @@ export default {
 
       if (parts[1] === 'mailboxes') {
         return withCors(request, env, await handleMailboxes(request, env, user, parts));
+      }
+
+      if (parts[1] === 'html-templates') {
+        return withCors(request, env, await handleHtmlTemplates(request, env, user, parts));
       }
 
       if (parts[1] === 'forward-destinations') {

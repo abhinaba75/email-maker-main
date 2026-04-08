@@ -519,6 +519,101 @@ export async function deleteMailbox(db, userId, mailboxId) {
   return mailbox;
 }
 
+export async function listHtmlTemplatesPage(db, userId, options = {}) {
+  const limit = clampLimit(options.limit, 50, 100);
+  const cursor = decodeCursor(options.cursor);
+  const clauses = ['user_id = ?1'];
+  const params = [userId];
+  if (options.domainId) {
+    clauses.push(`domain_id = ?${params.length + 1}`);
+    params.push(options.domainId);
+  }
+  if (cursor?.updatedAt && cursor?.id) {
+    clauses.push(`(updated_at < ?${params.length + 1} OR (updated_at = ?${params.length + 1} AND id < ?${params.length + 2}))`);
+    params.push(cursor.updatedAt, cursor.id);
+  }
+  const rows = await all(
+    db.prepare(
+      `SELECT *
+       FROM html_templates
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY updated_at DESC, id DESC
+       LIMIT ${limit + 1}`,
+    ).bind(...params),
+  );
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit);
+  const last = items.at(-1);
+  return {
+    items,
+    nextCursor: hasMore && last ? encodeCursor({ updatedAt: last.updated_at, id: last.id }) : null,
+  };
+}
+
+export async function getHtmlTemplate(db, userId, templateId) {
+  return first(
+    db.prepare(`SELECT * FROM html_templates WHERE user_id = ?1 AND id = ?2`).bind(userId, templateId),
+  );
+}
+
+export async function createHtmlTemplate(db, data) {
+  const timestamp = Date.now();
+  const id = data.id || createId('tpl_');
+  await db
+    .prepare(
+      `INSERT INTO html_templates (
+         id, user_id, domain_id, name, subject, html_content, created_at, updated_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`,
+    )
+    .bind(
+      id,
+      data.userId,
+      data.domainId || null,
+      data.name,
+      data.subject || '',
+      data.htmlContent || '',
+      timestamp,
+    )
+    .run();
+  return getHtmlTemplate(db, data.userId, id);
+}
+
+export async function updateHtmlTemplate(db, userId, templateId, patch) {
+  const current = await getHtmlTemplate(db, userId, templateId);
+  if (!current) return null;
+  await db
+    .prepare(
+      `UPDATE html_templates
+       SET domain_id = ?3,
+           name = ?4,
+           subject = ?5,
+           html_content = ?6,
+           updated_at = ?7
+       WHERE user_id = ?1 AND id = ?2`,
+    )
+    .bind(
+      userId,
+      templateId,
+      patch.domainId ?? current.domain_id ?? null,
+      patch.name ?? current.name,
+      patch.subject ?? current.subject,
+      patch.htmlContent ?? current.html_content,
+      Date.now(),
+    )
+    .run();
+  return getHtmlTemplate(db, userId, templateId);
+}
+
+export async function deleteHtmlTemplate(db, userId, templateId) {
+  const template = await getHtmlTemplate(db, userId, templateId);
+  if (!template) return null;
+  await db
+    .prepare(`DELETE FROM html_templates WHERE user_id = ?1 AND id = ?2`)
+    .bind(userId, templateId)
+    .run();
+  return template;
+}
+
 export async function getMailboxDependencySummary(db, userId, mailboxId) {
   const aliasDependency = await first(
     db.prepare(

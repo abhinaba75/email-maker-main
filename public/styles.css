@@ -82,7 +82,13 @@ body { min-height: 100vh; }
 }
 
 .dialog { width: min(520px, calc(100vw - 28px)); }
-.shell-window { margin: 18px auto; height: calc(100vh - 36px); display: flex; flex-direction: column; }
+.shell-window {
+  width: min(1560px, calc(100vw - 20px));
+  margin: 10px auto;
+  height: calc(100vh - 20px);
+  display: flex;
+  flex-direction: column;
+}
 
 .title-bar {
   display: flex;
@@ -254,7 +260,7 @@ textarea { min-height: 120px; resize: vertical; }
 }
 .mail-layout {
   display: grid;
-  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
   gap: 10px;
   min-height: 0;
   height: 100%;
@@ -335,10 +341,11 @@ textarea { min-height: 120px; resize: vertical; }
 }
 .message-html-frame {
   width: 100%;
-  min-height: 360px;
+  min-height: 520px;
   border: 0;
   background: #ffffff;
   display: block;
+  overflow: hidden;
 }
 
 .message-attachments { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
