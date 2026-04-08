@@ -1628,6 +1628,79 @@ function renderDomainsView() {
       }
     });
   });
+
+  document.getElementById('htmlTemplateForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const templateId = String(form.get('templateId') || '').trim();
+    const body = {
+      domainId: String(form.get('domainId') || '').trim() || null,
+      name: String(form.get('name') || '').trim(),
+      subject: String(form.get('subject') || '').trim(),
+      htmlContent: String(form.get('htmlContent') || ''),
+    };
+    try {
+      setStatus(templateId ? 'Saving HTML template...' : 'Creating HTML template...');
+      await api(templateId ? `/api/html-templates/${templateId}` : '/api/html-templates', {
+        method: templateId ? 'PATCH' : 'POST',
+        body: JSON.stringify(body),
+      });
+      state.htmlTemplateEditorId = null;
+      await loadHtmlTemplates();
+      renderDomainsView();
+      setStatus(templateId ? 'HTML template updated.' : 'HTML template created.');
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  document.getElementById('cancelTemplateEditButton')?.addEventListener('click', () => {
+    state.htmlTemplateEditorId = null;
+    renderDomainsView();
+  });
+
+  document.querySelectorAll('.edit-html-template').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.htmlTemplateEditorId = button.dataset.template;
+      renderDomainsView();
+      document.getElementById('htmlTemplateForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+
+  document.querySelectorAll('.delete-html-template').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const template = getHtmlTemplateById(button.dataset.template);
+      if (!template) return;
+      const confirmed = window.confirm(`Delete HTML template "${template.name}"?`);
+      if (!confirmed) return;
+      try {
+        setStatus('Deleting HTML template...');
+        await api(`/api/html-templates/${template.id}`, { method: 'DELETE' });
+        if (state.htmlTemplateEditorId === template.id) {
+          state.htmlTemplateEditorId = null;
+        }
+        await loadHtmlTemplates();
+        renderDomainsView();
+        setStatus('HTML template deleted.');
+      } catch (error) {
+        showError(error);
+      }
+    });
+  });
+
+  document.querySelectorAll('.use-html-template').forEach((button) => {
+    button.addEventListener('click', () => {
+      const template = getHtmlTemplateById(button.dataset.template);
+      if (!template) return;
+      openCompose({
+        subject: template.subject || '',
+        htmlBody: template.html_content || '',
+        textBody: stripHtmlToText(template.html_content || ''),
+        editorMode: 'html',
+      });
+      setStatus(`Loaded template "${template.name}" into compose.`);
+    });
+  });
 }
 
 function renderAliasesView() {
@@ -1845,79 +1918,6 @@ function renderDraftsView() {
       } catch (error) {
         showError(error);
       }
-    });
-  });
-
-  document.getElementById('htmlTemplateForm').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const templateId = String(form.get('templateId') || '').trim();
-    const body = {
-      domainId: String(form.get('domainId') || '').trim() || null,
-      name: String(form.get('name') || '').trim(),
-      subject: String(form.get('subject') || '').trim(),
-      htmlContent: String(form.get('htmlContent') || ''),
-    };
-    try {
-      setStatus(templateId ? 'Saving HTML template...' : 'Creating HTML template...');
-      await api(templateId ? `/api/html-templates/${templateId}` : '/api/html-templates', {
-        method: templateId ? 'PATCH' : 'POST',
-        body: JSON.stringify(body),
-      });
-      state.htmlTemplateEditorId = null;
-      await loadHtmlTemplates();
-      renderDomainsView();
-      setStatus(templateId ? 'HTML template updated.' : 'HTML template created.');
-    } catch (error) {
-      showError(error);
-    }
-  });
-
-  document.getElementById('cancelTemplateEditButton')?.addEventListener('click', () => {
-    state.htmlTemplateEditorId = null;
-    renderDomainsView();
-  });
-
-  document.querySelectorAll('.edit-html-template').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.htmlTemplateEditorId = button.dataset.template;
-      renderDomainsView();
-      document.getElementById('htmlTemplateForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  });
-
-  document.querySelectorAll('.delete-html-template').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const template = getHtmlTemplateById(button.dataset.template);
-      if (!template) return;
-      const confirmed = window.confirm(`Delete HTML template "${template.name}"?`);
-      if (!confirmed) return;
-      try {
-        setStatus('Deleting HTML template...');
-        await api(`/api/html-templates/${template.id}`, { method: 'DELETE' });
-        if (state.htmlTemplateEditorId === template.id) {
-          state.htmlTemplateEditorId = null;
-        }
-        await loadHtmlTemplates();
-        renderDomainsView();
-        setStatus('HTML template deleted.');
-      } catch (error) {
-        showError(error);
-      }
-    });
-  });
-
-  document.querySelectorAll('.use-html-template').forEach((button) => {
-    button.addEventListener('click', () => {
-      const template = getHtmlTemplateById(button.dataset.template);
-      if (!template) return;
-      openCompose({
-        subject: template.subject || '',
-        htmlBody: template.html_content || '',
-        textBody: stripHtmlToText(template.html_content || ''),
-        editorMode: 'html',
-      });
-      setStatus(`Loaded template "${template.name}" into compose.`);
     });
   });
 }
