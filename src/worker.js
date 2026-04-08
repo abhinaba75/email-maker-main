@@ -85,6 +85,7 @@ import {
 } from './lib/providers/groq.js';
 import {
   deriveSendingDomainPlan,
+  getWorkspaceSendingStatus,
   getResendDomainHostname,
   getResendDomainStatus,
   isSendEnabledResendDomain,
@@ -543,19 +544,35 @@ async function getRealtimeContext(request, env) {
 }
 
 async function bootstrapData(db, env, userId) {
-  const [connections, reconciliation, mailboxesPage, alerts] = await Promise.all([
+  const [user, connections, domains, mailboxesPage, alerts] = await Promise.all([
+    getUser(db, userId),
     listConnections(db, userId),
-    reconcileSendingDomainState(db, env, userId),
+    listDomains(db, userId),
     listMailboxesPage(db, userId, { limit: 100 }),
     getAlertCounts(db, userId),
   ]);
+  const resendConnected = connections.some((connection) => connection.provider === 'resend');
+  const selectedSendingDomainId = domains.some((domain) => domain.id === user?.selected_sending_domain_id)
+    ? user.selected_sending_domain_id
+    : null;
+  const sendingDomain = domains.find((domain) => domain.send_capability === SEND_CAPABILITY.ENABLED) || null;
+  const selectedDomain = domains.find((domain) => domain.id === selectedSendingDomainId) || null;
+  const sendingStatusMessage = sendingDomain
+    ? null
+    : getWorkspaceSendingStatus({ resendConnected, selectedDomain });
+  const hydratedDomains = domains.map((domain) => ({
+    ...domain,
+    sendCapability: domain.send_capability || SEND_CAPABILITY.RECEIVE_ONLY,
+    canSend: (domain.send_capability || SEND_CAPABILITY.RECEIVE_ONLY) === SEND_CAPABILITY.ENABLED,
+    isSelectedSendingDomain: domain.id === selectedSendingDomainId,
+  }));
   return {
     connections: connections.map(toConnectionSummary),
-    domains: reconciliation.domains,
+    domains: hydratedDomains,
     mailboxes: mailboxesPage.items,
-    selectedSendingDomainId: reconciliation.selectedSendingDomainId,
-    sendingDomainId: reconciliation.sendingDomainId,
-    sendingStatusMessage: reconciliation.sendingStatusMessage,
+    selectedSendingDomainId,
+    sendingDomainId: sendingDomain?.id || null,
+    sendingStatusMessage,
     alertCounts: alerts,
   };
 }

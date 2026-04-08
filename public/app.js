@@ -768,22 +768,26 @@ async function initFirebase() {
     });
 
     authModule.onIdTokenChanged(auth, async (user) => {
-      if (!user) {
-        state.user = null;
-        state.token = '';
-        disconnectRealtime();
-        refs.loginOverlay.classList.remove('hidden');
-        refs.appShell.classList.add('hidden');
-        refs.loginMessage.textContent = 'Sign in to continue.';
-        return;
-      }
+      try {
+        if (!user) {
+          state.user = null;
+          state.token = '';
+          disconnectRealtime();
+          refs.loginOverlay.classList.remove('hidden');
+          refs.appShell.classList.add('hidden');
+          refs.loginMessage.textContent = 'Sign in to continue.';
+          return;
+        }
 
-      state.token = await user.getIdToken();
-      refs.loginOverlay.classList.add('hidden');
-      refs.appShell.classList.remove('hidden');
-      await refreshBootstrap();
-      await loadZones();
-      connectRealtime().catch(showError);
+        state.token = await user.getIdToken();
+        refs.loginOverlay.classList.add('hidden');
+        refs.appShell.classList.remove('hidden');
+        await refreshBootstrap();
+        await loadZones();
+        connectRealtime().catch(showError);
+      } catch (error) {
+        showError(error);
+      }
     });
   } catch (error) {
     console.error(error);
