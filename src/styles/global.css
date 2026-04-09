@@ -557,11 +557,16 @@ textarea:focus {
 }
 
 .app-view {
-  height: 100%;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
+}
+
+.app-view-body {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .alert-banner-slot {
@@ -588,6 +593,11 @@ textarea:focus {
   gap: 14px;
 }
 
+.mail-stage > * {
+  min-height: 0;
+  min-width: 0;
+}
+
 .mail-panel,
 .surface-card {
   border-radius: var(--radius-xl);
@@ -599,6 +609,8 @@ textarea:focus {
 .preview-panel {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  height: 100%;
 }
 
 .panel-head,
@@ -825,6 +837,7 @@ textarea:focus {
   overflow: auto;
   scrollbar-gutter: stable;
   display: grid;
+  grid-auto-rows: min-content;
   gap: 14px;
   padding-right: 4px;
 }

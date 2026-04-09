@@ -65,7 +65,9 @@ export function AppShell({ controller, children }: AppShellProps) {
             <div className={`alert-banner-slot ${alertSummary ? 'has-alert' : ''}`}>
               {alertSummary ? <div className="alert-banner">{alertSummary}</div> : null}
             </div>
-            {children}
+            <div className="app-view-body">
+              {children}
+            </div>
           </div>
         </main>
 
