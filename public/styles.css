@@ -228,7 +228,7 @@ body::after {
 .title-bar-text {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 0;
   font-size: var(--step-lg);
   font-weight: 650;
   letter-spacing: -0.03em;
@@ -238,16 +238,7 @@ body::after {
 }
 
 #windowTitle::before {
-  content: "";
-  width: 16px;
-  height: 16px;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.14) 36%, transparent 37%),
-    linear-gradient(135deg, rgba(100, 255, 181, 0.95), rgba(16, 113, 71, 0.95));
-  box-shadow:
-    0 0 0 6px rgba(45, 217, 143, 0.08),
-    0 0 20px rgba(45, 217, 143, 0.28);
+  content: none;
 }
 
 .title-bar-controls {
@@ -858,8 +849,11 @@ code {
 
 .list-row {
   display: grid;
-  grid-template-columns: 160px minmax(0, 1fr) auto;
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "account time"
+    "copy copy";
+  gap: 10px 14px;
   align-items: start;
   padding: 14px 16px;
   cursor: pointer;
@@ -874,15 +868,20 @@ code {
 }
 
 .thread-account {
+  grid-area: account;
   font-size: var(--step-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
   line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .thread-copy {
+  grid-area: copy;
   display: grid;
   gap: 5px;
   min-width: 0;
@@ -890,11 +889,14 @@ code {
 
 .thread-subject {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   font-size: var(--step-base);
   font-weight: 650;
   line-height: 1.28;
+  color: var(--text-strong);
+  text-wrap: pretty;
 }
 
 .thread-snippet {
@@ -908,10 +910,13 @@ code {
 }
 
 .thread-time {
+  grid-area: time;
   white-space: nowrap;
   font-size: var(--step-xs);
   color: var(--muted);
   line-height: 1.4;
+  justify-self: end;
+  padding-top: 1px;
 }
 
 .preview-stack {
