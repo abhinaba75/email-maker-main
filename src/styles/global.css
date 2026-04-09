@@ -618,9 +618,10 @@ textarea:focus {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  grid-template-columns: clamp(360px, 28vw, 430px) minmax(620px, 920px);
   gap: 12px;
   overflow: hidden;
+  justify-content: center;
 }
 
 .mail-stage > * {
@@ -813,10 +814,7 @@ textarea:focus {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  padding: 18px;
+  padding: 12px;
 }
 
 .preview-meta-item {
@@ -845,7 +843,7 @@ textarea:focus {
 }
 
 .message-reading-surface {
-  width: min(100%, 920px);
+  width: 100%;
   min-height: 100%;
   border-radius: 20px;
   background: #ffffff;
@@ -858,7 +856,7 @@ textarea:focus {
 .html-preview-shell {
   overflow: hidden;
   min-height: 0;
-  width: min(100%, 920px);
+  width: 100%;
   border-radius: 20px;
   border: 1px solid rgba(12, 18, 24, 0.08);
   background: #ffffff;
@@ -1342,7 +1340,7 @@ code {
   }
 
   .mail-stage {
-    grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+    grid-template-columns: clamp(320px, 30vw, 390px) minmax(520px, 760px);
   }
 
   .top-header {
@@ -1388,7 +1386,7 @@ code {
   }
 
   .mail-stage {
-    grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+    grid-template-columns: clamp(280px, 32vw, 340px) minmax(420px, 620px);
     gap: 10px;
   }
 
