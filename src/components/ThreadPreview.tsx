@@ -47,17 +47,23 @@ export function ThreadPreview({ thread, onDownloadAttachment }: ThreadPreviewPro
             </div>
 
             {String(message.html_body || '').trim() ? (
-              <div className="html-preview-shell html-preview-shell-expanded">
-                <iframe
-                  title="HTML email preview"
-                  className="html-preview-frame html-preview-frame-expanded"
-                  loading="lazy"
-                  sandbox="allow-popups allow-popups-to-escape-sandbox"
-                  srcDoc={buildEmailPreviewDocument(message.html_body || '')}
-                />
+              <div className="preview-reading-stage">
+                <div className="html-preview-shell html-preview-shell-expanded">
+                  <iframe
+                    title="HTML email preview"
+                    className="html-preview-frame html-preview-frame-expanded"
+                    loading="lazy"
+                    sandbox="allow-popups allow-popups-to-escape-sandbox"
+                    srcDoc={buildEmailPreviewDocument(message.html_body || '')}
+                  />
+                </div>
               </div>
             ) : (
-              <div className="message-text-body message-text-body-expanded">{message.text_body || message.snippet || '(no content)'}</div>
+              <div className="preview-reading-stage">
+                <div className="message-text-body message-text-body-expanded message-reading-surface">
+                  {message.text_body || message.snippet || '(no content)'}
+                </div>
+              </div>
             )}
 
             {message.attachments?.length ? (
