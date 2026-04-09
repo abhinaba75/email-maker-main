@@ -1,4 +1,4 @@
-# Alias Forge 2000
+# Email By Abhinaba Das
 
 Cloudflare Worker mail console with:
 
@@ -8,7 +8,8 @@ Cloudflare Worker mail console with:
 - alias + catch-all routing with forwarding
 - inbound storage in D1/R2
 - outbound sending via Resend
-- Windows 2000 / Outlook Express style UI
+- React + TypeScript frontend built with Vite
+- modern dark email app UI with glass surfaces, icon navigation, and animated compose flows
 
 ## Local setup
 
@@ -17,7 +18,10 @@ Cloudflare Worker mail console with:
 3. Review [`wrangler.jsonc`](C:/Users/abhin/Downloads/Programming/email-maker/email-maker/wrangler.jsonc) and replace the account-specific bindings if you are deploying to a different Cloudflare account.
 4. Add the Worker secret `APP_ENCRYPTION_KEY` with `npx wrangler secret put APP_ENCRYPTION_KEY`.
 5. Apply the schema from [`schema.sql`](C:/Users/abhin/Downloads/Programming/email-maker/email-maker/schema.sql) to D1.
-6. Run `npm run dev` or `npx wrangler deploy`.
+6. Run the frontend with `npm run dev`.
+7. Run the Worker locally with `npm run dev:worker`.
+8. Build static assets with `npm run build`.
+9. Deploy with `npm run deploy`.
 
 ## Notes
 
@@ -25,3 +29,4 @@ Cloudflare Worker mail console with:
 - Firebase web config is delivered through Worker environment vars and is intentionally exposed to the browser. All protected API routes still verify Firebase ID tokens on the Worker.
 - Cloudflare Email Routing rules preserve forwarding and route inbox delivery directly into the Email Worker.
 - Configure `ALLOWED_ORIGINS` so only your Cloudflare production origin and local development origins can call the Worker API cross-origin.
+- Wrangler now serves the built frontend from `dist`, while Vite owns the React client source under [`src`](C:/Users/abhin/Downloads/Programming/email-maker/email-maker/src).

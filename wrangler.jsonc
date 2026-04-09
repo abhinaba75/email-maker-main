@@ -13,7 +13,7 @@
     "head_sampling_rate": 1
   },
   "assets": {
-    "directory": "./public",
+    "directory": "./dist",
     "binding": "ASSETS"
   },
   "durable_objects": {
