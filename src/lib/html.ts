@@ -75,16 +75,67 @@ export function buildEmailPreviewDocument(html: string): string {
     <base target="_blank">
     ${fragment.styles}
     <style>
-      html, body { margin: 0; padding: 0; background: #ffffff; }
-      body { color: #111111; font: 14px/1.5 Arial, sans-serif; overflow-wrap: anywhere; }
-      img { max-width: 100%; height: auto; }
-      table { max-width: 100%; }
+      html, body {
+        width: 100% !important;
+        min-width: 100% !important;
+        max-width: 100% !important;
+        margin: 0;
+        padding: 0;
+        background: #ffffff;
+        overflow-x: hidden;
+      }
+      body {
+        color: #111111;
+        font: 14px/1.5 Arial, sans-serif;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .preview-root,
+      .preview-root > * {
+        box-sizing: border-box;
+      }
+      .preview-root,
+      .preview-root > table,
+      .preview-root > div,
+      .preview-root > section,
+      .preview-root > main,
+      .preview-root > article,
+      center {
+        width: 100% !important;
+        max-width: 100% !important;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+      }
+      table {
+        width: 100% !important;
+        max-width: 100% !important;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+      }
+      td,
+      th {
+        max-width: 100% !important;
+        overflow-wrap: anywhere;
+      }
+      img {
+        display: block;
+        max-width: 100% !important;
+        height: auto !important;
+      }
+      [width],
+      [style*="max-width"],
+      [style*="width:600px"],
+      [style*="width: 600px"],
+      [style*="width:560px"],
+      [style*="width: 560px"] {
+        max-width: 100% !important;
+      }
       pre { white-space: pre-wrap; }
       blockquote { margin: 0 0 0 12px; padding-left: 12px; border-left: 2px solid #c5cede; }
       a { color: #0a4a7a; }
     </style>
   </head>
-  <body>${fragment.body || '<div>(no content)</div>'}</body>
+  <body><div class="preview-root">${fragment.body || '<div>(no content)</div>'}</div></body>
 </html>`;
 }
 

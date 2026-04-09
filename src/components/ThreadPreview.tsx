@@ -10,6 +10,7 @@ interface ThreadPreviewProps {
 
 export function ThreadPreview({ thread, onDownloadAttachment }: ThreadPreviewProps) {
   const message = thread?.messages?.[thread.messages.length - 1] || null;
+  const hasHtmlBody = Boolean(String(message?.html_body || '').trim());
 
   return (
     <section className="mail-panel preview-panel">
@@ -24,7 +25,7 @@ export function ThreadPreview({ thread, onDownloadAttachment }: ThreadPreviewPro
 
       <div className="preview-stack">
         {thread && message ? (
-          <article className="message-card">
+          <>
             <div className="preview-meta-bar">
               <div className="preview-meta-item">
                 <span className="meta-label">From</span>
@@ -46,12 +47,12 @@ export function ThreadPreview({ thread, onDownloadAttachment }: ThreadPreviewPro
               </div>
             </div>
 
-            {String(message.html_body || '').trim() ? (
-              <div className="preview-reading-stage">
-                <div className="html-preview-shell html-preview-shell-expanded">
+            {hasHtmlBody ? (
+              <div className="preview-reading-stage preview-reading-stage-html">
+                <div className="html-preview-shell">
                   <iframe
                     title="HTML email preview"
-                    className="html-preview-frame html-preview-frame-expanded"
+                    className="html-preview-frame"
                     loading="lazy"
                     sandbox="allow-popups allow-popups-to-escape-sandbox"
                     srcDoc={buildEmailPreviewDocument(message.html_body || '')}
@@ -59,15 +60,15 @@ export function ThreadPreview({ thread, onDownloadAttachment }: ThreadPreviewPro
                 </div>
               </div>
             ) : (
-              <div className="preview-reading-stage">
-                <div className="message-text-body message-text-body-expanded message-reading-surface">
+              <div className="preview-reading-stage preview-reading-stage-text">
+                <div className="message-text-body message-reading-surface">
                   {message.text_body || message.snippet || '(no content)'}
                 </div>
               </div>
             )}
 
             {message.attachments?.length ? (
-              <div className="attachment-list">
+              <div className="attachment-list preview-attachments">
                 {message.attachments.map((attachment) => (
                   <button
                     key={attachment.id}
@@ -81,7 +82,7 @@ export function ThreadPreview({ thread, onDownloadAttachment }: ThreadPreviewPro
                 ))}
               </div>
             ) : null}
-          </article>
+          </>
         ) : (
           <div className="empty-card">Select a thread from the left to preview the full message.</div>
         )}

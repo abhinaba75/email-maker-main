@@ -3,6 +3,7 @@ import type { ViewId } from '../types';
 
 interface TopHeaderProps {
   view: ViewId;
+  mailTitle?: string;
   searchQuery: string;
   onSearchChange: (value: string) => void;
   onSearchSubmit: () => void;
@@ -27,6 +28,7 @@ const TITLES: Record<ViewId, string> = {
 
 export function TopHeader({
   view,
+  mailTitle,
   searchQuery,
   onSearchChange,
   onSearchSubmit,
@@ -39,11 +41,13 @@ export function TopHeader({
   canActOnThread,
   subtitle,
 }: TopHeaderProps) {
+  const title = view === 'mail' ? (mailTitle || 'Inbox') : TITLES[view];
+
   return (
     <header className="top-header">
       <div className="top-header-copy">
         <div className="eyebrow">Email workspace</div>
-        <h1>{TITLES[view]}</h1>
+        <h1>{title}</h1>
         <p className="header-subtitle">{subtitle || '\u00a0'}</p>
       </div>
 

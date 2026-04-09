@@ -47,6 +47,7 @@ export function AppShell({ controller, children }: AppShellProps) {
       <div className="app-stage">
         <TopHeader
           view={controller.view}
+          mailTitle={controller.view === 'mail' ? controller.folder.charAt(0).toUpperCase() + controller.folder.slice(1) : undefined}
           searchQuery={controller.searchQuery}
           onSearchChange={controller.setSearchQuery}
           onSearchSubmit={() => void controller.runSearch().catch(console.error)}
