@@ -264,8 +264,13 @@ export function useAppController(): AppController {
     setStatus(`Opened "${payload.thread.subject || '(no subject)'}"`);
   }
 
-  async function loadThreadsAction(targetFolder = folder, targetMailboxId = mailboxId, targetSearch = searchQuery) {
-    if (!user) return;
+  async function loadThreadsAction(
+    targetFolder = folder,
+    targetMailboxId = mailboxId,
+    targetSearch = searchQuery,
+    options: { preserveSelection?: boolean } = {},
+  ) {
+    if (!tokenRef.current && !authRef.current?.currentUser) return;
     setStatus(`Loading ${targetFolder}...`);
     const query = new URLSearchParams({ folder: targetFolder });
     if (targetMailboxId) query.set('mailboxId', targetMailboxId);
@@ -273,11 +278,13 @@ export function useAppController(): AppController {
     const payload = await api<{ items?: ThreadSummary[]; threads?: ThreadSummary[] }>(`/api/threads?${query.toString()}`);
     const nextThreads = payload.items || payload.threads || [];
     setThreads(nextThreads);
-    const selected = nextThreads.find((thread) => thread.id === selectedThread?.id) || nextThreads[0] || null;
-    setSelectedThread(null);
-    if (selected) {
-      await selectThreadAction(selected.id);
+    const preservedSelection = options.preserveSelection && selectedThread?.id
+      ? nextThreads.find((thread) => thread.id === selectedThread.id)
+      : null;
+    if (preservedSelection) {
+      await selectThreadAction(preservedSelection.id);
     } else {
+      setSelectedThread(null);
       setStatus(`Ready. ${nextThreads.length} thread(s) in ${targetFolder}.`);
     }
   }
@@ -301,7 +308,7 @@ export function useAppController(): AppController {
       drafts: current.drafts,
     }));
     if (view === 'mail') {
-      await loadThreadsAction();
+      await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: false });
     } else {
       await ensureViewData(view);
       setStatus(buildAlertSummary(payload.alertCounts || EMPTY_ALERTS) || 'Workspace ready.');
@@ -315,7 +322,7 @@ export function useAppController(): AppController {
         setStatus('New mail arrived. Refresh after finishing your draft.');
         return;
       }
-      await loadThreadsAction();
+      await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: true });
       return;
     }
     if (event.type === 'draft.updated' && view === 'drafts') {
@@ -328,7 +335,7 @@ export function useAppController(): AppController {
   }
 
   async function connectRealtime() {
-    if (!user) return;
+    if (!tokenRef.current && !authRef.current?.currentUser) return;
     disconnectRealtime();
     const token = await getFreshToken();
     if (!token) return;
@@ -383,7 +390,7 @@ export function useAppController(): AppController {
       setFolder(nextFolder);
       setMailboxId(null);
       setSelectedThread(null);
-      await loadThreadsAction(nextFolder, null, searchQuery);
+      await loadThreadsAction(nextFolder, null, searchQuery, { preserveSelection: false });
       return;
     }
     const nextView = target as ViewId;
@@ -397,12 +404,12 @@ export function useAppController(): AppController {
     setFolder('inbox');
     setMailboxId(mailboxIdValue);
     setSelectedThread(null);
-    await loadThreadsAction('inbox', mailboxIdValue, searchQuery);
+    await loadThreadsAction('inbox', mailboxIdValue, searchQuery, { preserveSelection: false });
   }
 
   async function refreshCurrentView() {
     if (view === 'mail') {
-      await loadThreadsAction();
+      await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: true });
       return;
     }
     if (view === 'aliases') {
