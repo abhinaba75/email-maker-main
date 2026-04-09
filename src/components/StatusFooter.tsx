@@ -11,8 +11,11 @@ export function StatusFooter({ status, userEmail, currentView, realtimeStatus }:
   const connected = realtimeStatus === 'connected';
   return (
     <footer className="status-footer">
-      <div className="status-pill-group">
+      <div className="status-left">
         <div className="status-pill status-primary" title={status}>{status}</div>
+      </div>
+      <div className="footer-credit">Thanks to Figma and Framer for UI designing tools :)</div>
+      <div className="status-right">
         {userEmail ? <div className="status-pill subtle status-secondary" title={userEmail}>{userEmail}</div> : null}
         <div className="status-pill subtle status-tertiary">{currentView}</div>
         <div className={`status-pill ${connected ? 'good' : 'warning'}`}>
@@ -20,7 +23,6 @@ export function StatusFooter({ status, userEmail, currentView, realtimeStatus }:
           {connected ? 'Realtime connected' : realtimeStatus === 'reconnecting' ? 'Realtime reconnecting' : 'Realtime idle'}
         </div>
       </div>
-      <div className="footer-credit">Thanks to Figma and Framer for UI designing tools :)</div>
     </footer>
   );
 }

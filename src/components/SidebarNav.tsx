@@ -56,7 +56,6 @@ export function SidebarNav({
   return (
     <aside className="sidebar">
       <div className="brand-block">
-        <div className="brand-mark">E</div>
         <div className="brand-copy">
           <div className="brand-title">Email By Abhinaba Das</div>
           <div className="brand-subtitle">Inbox, domains, forwarding, templates, AI</div>
@@ -86,7 +85,7 @@ export function SidebarNav({
                       <span className="nav-label">{item.label}</span>
                       <span className="nav-meta">{item.meta}</span>
                     </span>
-                    {badge ? <span className="nav-badge">{badge}</span> : null}
+                    {badge ? <span className="nav-count">{badge}</span> : null}
                   </button>
                 );
               })}
