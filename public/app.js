@@ -109,25 +109,38 @@ const refs = {
 
 const sidebarModel = [
   {
-    group: 'Mailbox',
+    group: 'Email',
     items: [
       { id: 'mail:inbox', label: 'Inbox' },
-      { id: 'mail:sent', label: 'Sent Items' },
+      { id: 'mail:sent', label: 'Sent' },
       { id: 'drafts', label: 'Drafts' },
       { id: 'mail:archive', label: 'Archive' },
-      { id: 'mail:trash', label: 'Deleted Items' },
+      { id: 'mail:trash', label: 'Deleted' },
     ],
   },
   {
-    group: 'Configuration',
+    group: 'Workspace',
     items: [
       { id: 'connections', label: 'Connections' },
       { id: 'domains', label: 'Domains & Mailboxes' },
-      { id: 'aliases', label: 'Aliases & Catch-All' },
+      { id: 'aliases', label: 'Alias Rules' },
       { id: 'destinations', label: 'Forward Destinations' },
     ],
   },
 ];
+
+function getSidebarIconName(id) {
+  if (id === 'mail:inbox') return 'inbox';
+  if (id === 'mail:sent') return 'sent';
+  if (id === 'drafts') return 'drafts';
+  if (id === 'mail:archive') return 'archive';
+  if (id === 'mail:trash') return 'trash';
+  if (id === 'connections') return 'connections';
+  if (id === 'domains') return 'domains';
+  if (id === 'aliases') return 'aliases';
+  if (id === 'destinations') return 'destinations';
+  return 'default';
+}
 
 function loadUnlockedEggs() {
   try {
@@ -988,8 +1001,11 @@ function renderSidebar() {
         <div class="tree-group-label">${escapeHtml(domain.hostname)}</div>
         ${mailboxes.map((mailbox) => `
           <div class="tree-item ${state.mailboxId === mailbox.id && state.view === 'mail' ? 'active' : ''}" data-mailbox="${mailbox.id}">
-            <span>✉</span>
-            <span>${escapeHtml(mailbox.email_address)}</span>
+            <span class="tree-item-icon tree-item-icon-mailbox" aria-hidden="true"></span>
+            <span class="tree-copy">
+              <span class="tree-label">${escapeHtml(mailbox.email_address)}</span>
+              <span class="tree-meta">${escapeHtml(domain.hostname)}</span>
+            </span>
           </div>
         `).join('')}
       </div>
@@ -1005,8 +1021,11 @@ function renderSidebar() {
           const badge = item.id === `mail:${state.folder}` ? state.threads.length : '';
           return `
             <div class="tree-item ${isActive ? 'active' : ''}" data-view="${item.id}">
-              <span>${item.id.startsWith('mail:') ? '▸' : '◆'}</span>
-              <span>${item.label}</span>
+              <span class="tree-item-icon" data-icon="${getSidebarIconName(item.id)}" aria-hidden="true"></span>
+              <span class="tree-copy">
+                <span class="tree-label">${item.label}</span>
+                <span class="tree-meta">${item.id.startsWith('mail:') ? 'Folder' : 'Admin'}</span>
+              </span>
               ${badge ? `<span class="tree-badge">${badge}</span>` : ''}
             </div>
           `;
@@ -1292,12 +1311,12 @@ function renderMailView() {
         <div class="list-grid">
           ${state.threads.length ? state.threads.map((thread) => `
             <div class="list-row ${state.selectedThread?.id === thread.id ? 'active' : ''}" data-thread="${thread.id}">
-              <div><strong>${escapeHtml(thread.mailbox_email || thread.hostname || '')}</strong></div>
-              <div>
-                <strong>${escapeHtml(thread.subject || '(no subject)')}</strong><br>
-                <span>${escapeHtml(thread.snippet || '')}</span>
+              <div class="thread-account">${escapeHtml(thread.mailbox_email || thread.hostname || '')}</div>
+              <div class="thread-copy">
+                <strong class="thread-subject">${escapeHtml(thread.subject || '(no subject)')}</strong>
+                <span class="thread-snippet">${escapeHtml(thread.snippet || '')}</span>
               </div>
-              <div>${escapeHtml(formatDateTime(thread.latest_message_at))}</div>
+              <div class="thread-time">${escapeHtml(formatDateTime(thread.latest_message_at))}</div>
             </div>
           `).join('') : `<div class="surface"><span class="muted">${escapeHtml(emptyMessage)}</span></div>`}
         </div>
@@ -2039,6 +2058,7 @@ function getAlertSummaryHtml() {
 function renderContent() {
   refs.statusUser.textContent = state.user?.email || '';
   refs.statusFolder.textContent = state.view === 'mail' ? state.folder : state.view;
+  refs.contentView.dataset.view = state.view;
   renderSidebar();
   refs.contentView.classList.toggle('mail-pane', state.view === 'mail');
 
