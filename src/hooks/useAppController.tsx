@@ -294,7 +294,10 @@ export function useAppController(): AppController {
   async function refreshBootstrap() {
     setStatus('Loading workspace...');
     const payload = await api<BootPayload>('/api/bootstrap');
-    setUser(payload.user);
+    setUser(payload.user ? {
+      ...payload.user,
+      photo_url: authRef.current?.currentUser?.photoURL || user?.photo_url,
+    } : null);
     setSelectedSendingDomainId(payload.selectedSendingDomainId || null);
     setSendingDomainId(payload.sendingDomainId || null);
     setSendingStatusMessage(payload.sendingStatusMessage || null);
@@ -777,6 +780,10 @@ export function useAppController(): AppController {
             tokenRef.current = await firebaseUser.getIdToken();
             setBooting(false);
             await refreshBootstrap();
+            setUser((current) => current ? {
+              ...current,
+              photo_url: firebaseUser.photoURL || current.photo_url,
+            } : current);
             await loadZones();
             connectRealtime().catch(showError);
           } catch (error) {

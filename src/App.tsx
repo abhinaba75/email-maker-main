@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react';
+import { ActionNotifications, type UiNotice } from './components/ActionNotifications';
 import { motion } from 'framer-motion';
 import { AppShell } from './components/AppShell';
 import { ComposeModal } from './components/ComposeModal';
@@ -11,8 +13,43 @@ import { DestinationsView } from './views/DestinationsView';
 import { DomainsMailboxesView } from './views/DomainsMailboxesView';
 import { DraftsView } from './views/DraftsView';
 
+type NoticeTone = UiNotice['tone'];
+
+function classifyStatus(status: string): { kind: 'ignore' | 'clear' | 'active' | 'toast'; tone?: NoticeTone; duration?: number } {
+  const value = status.trim();
+  if (!value) return { kind: 'ignore' };
+  if (
+    /^Ready(\.|$)/.test(value)
+    || /^Workspace ready\.?$/.test(value)
+    || /^Opened "/.test(value)
+    || value === 'Sign in to continue.'
+    || value === 'Ready for Google sign-in.'
+  ) {
+    return { kind: 'clear' };
+  }
+  if (
+    /^(Sending|Saving|Deleting|Refreshing|Selecting|Repairing|Provisioning|Creating|Emptying|Updating|Loading)\b/i.test(value)
+    || value.endsWith('...')
+  ) {
+    return { kind: 'active', tone: 'info' };
+  }
+  if (/New mail arrived/i.test(value)) {
+    return { kind: 'toast', tone: 'warning', duration: 3800 };
+  }
+  if (/(failed|error|cannot|not allowed|invalid|missing|unsupported|denied|unavailable|not found)/i.test(value)) {
+    return { kind: 'toast', tone: 'error', duration: 4600 };
+  }
+  if (/(sent\.|saved\.|deleted\.|created\.|updated\.|connected\.|finished\.|provisioned\.|refreshed\.|emptied\.)$/i.test(value)) {
+    return { kind: 'toast', tone: 'success', duration: 2800 };
+  }
+  return { kind: 'toast', tone: 'info', duration: 2800 };
+}
+
 export default function App() {
   const controller = useAppController();
+  const [activeNotice, setActiveNotice] = useState<Omit<UiNotice, 'id'> | null>(null);
+  const [toasts, setToasts] = useState<UiNotice[]>([]);
+  const lastStatusRef = useRef('');
   const mailboxFilter = controller.mailboxId
     ? controller.data.mailboxes.find((mailbox) => mailbox.id === controller.mailboxId)?.email_address
     : null;
@@ -22,8 +59,41 @@ export default function App() {
   const selectedSendingMailboxes = getSelectedSendingMailboxes(controller.data.mailboxes, controller.selectedSendingDomainId);
   const sendingDomain = getSendingDomain(controller.data.domains, controller.sendingDomainId);
 
+  useEffect(() => {
+    const nextStatus = controller.status.trim();
+    if (!nextStatus || nextStatus === lastStatusRef.current) return;
+    lastStatusRef.current = nextStatus;
+
+    const classification = classifyStatus(nextStatus);
+    if (classification.kind === 'ignore') return;
+    if (classification.kind === 'clear') {
+      setActiveNotice(null);
+      return;
+    }
+    if (classification.kind === 'active') {
+      setActiveNotice({ message: nextStatus, tone: classification.tone || 'info' });
+      return;
+    }
+
+    setActiveNotice(null);
+    const notice = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      message: nextStatus,
+      tone: classification.tone || 'info',
+    };
+    setToasts((current) => [...current.slice(-3), notice]);
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((item) => item.id !== notice.id));
+    }, classification.duration || 2800);
+  }, [controller.status]);
+
   return (
     <>
+      <ActionNotifications
+        activeNotice={activeNotice}
+        toasts={toasts}
+        onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+      />
       {controller.booting ? (
         <div className="boot-screen">
           <motion.div className="boot-card" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>

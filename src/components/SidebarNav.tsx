@@ -120,7 +120,13 @@ export function SidebarNav({
       </div>
 
       <div className="account-card">
-        <div className="account-avatar">{(user?.display_name || user?.email || 'E').slice(0, 1).toUpperCase()}</div>
+        <div className="account-avatar">
+          {user?.photo_url ? (
+            <img src={user.photo_url} alt={user.display_name || user.email || 'Profile'} />
+          ) : (
+            (user?.display_name || user?.email || 'E').slice(0, 1).toUpperCase()
+          )}
+        </div>
         <div className="account-copy">
           <div className="account-name">{user?.display_name || 'Not signed in'}</div>
           <div className="account-email">{user?.email || 'Sign in required'}</div>

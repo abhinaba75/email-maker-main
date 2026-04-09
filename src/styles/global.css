@@ -454,6 +454,13 @@ textarea:focus {
   place-items: center;
   font-weight: 700;
   background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .account-name {
@@ -532,6 +539,59 @@ textarea:focus {
   flex-direction: column;
   gap: 10px;
   overflow: hidden;
+}
+
+.notification-layer {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 70;
+  display: grid;
+  justify-items: end;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.activity-banner,
+.toast-card {
+  max-width: min(420px, calc(100vw - 32px));
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 15, 21, 0.94);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32);
+  color: var(--text-strong);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  pointer-events: auto;
+}
+
+.activity-banner.info,
+.toast-card.info {
+  border-color: rgba(116, 201, 255, 0.24);
+}
+
+.toast-card.success {
+  border-color: rgba(45, 217, 143, 0.3);
+  color: #baf5d7;
+}
+
+.toast-card.warning {
+  border-color: rgba(255, 203, 107, 0.28);
+  color: #ffe3a7;
+}
+
+.toast-card.error {
+  border-color: rgba(255, 122, 133, 0.3);
+  color: #ffc1c7;
+}
+
+.toast-stack {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
 }
 
 .top-header {
@@ -1074,6 +1134,36 @@ textarea:focus {
   padding: 16px 18px 0;
 }
 
+.compose-sync-pill {
+  margin-left: auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted-strong);
+  white-space: nowrap;
+}
+
+.compose-sync-pill.saving {
+  border-color: rgba(116, 201, 255, 0.2);
+  color: #d5e9ff;
+}
+
+.compose-sync-pill.success {
+  border-color: rgba(45, 217, 143, 0.28);
+  color: #baf5d7;
+}
+
+.compose-sync-pill.error {
+  border-color: rgba(255, 122, 133, 0.28);
+  color: #ffc1c7;
+}
+
 .compose-head h2 {
   margin: 4px 0 0;
   font-size: 1.55rem;
@@ -1112,6 +1202,10 @@ textarea:focus {
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
 }
 
 .segmented-control,
@@ -1448,6 +1542,18 @@ code {
     max-height: calc(100dvh - 16px);
   }
 
+  .notification-layer {
+    top: 12px;
+    right: 12px;
+    left: 12px;
+    justify-items: stretch;
+  }
+
+  .activity-banner,
+  .toast-card {
+    max-width: none;
+  }
+
   .status-pill-group {
     flex-wrap: wrap;
   }
@@ -1479,5 +1585,15 @@ code {
 
   .data-table {
     min-width: 560px;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
   }
 }

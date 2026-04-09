@@ -1,10 +1,12 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Bold,
+  CheckCircle2,
   Code2,
   FileText,
   Italic,
   Link2,
+  Loader2,
   List,
   ListOrdered,
   Quote,
@@ -65,15 +67,29 @@ export function ComposeModal({
   const [busy, setBusy] = useState(false);
   const [htmlPanelMode, setHtmlPanelMode] = useState<'visual' | 'split' | 'source'>('split');
   const [htmlStyles, setHtmlStyles] = useState('');
+  const [draftSyncState, setDraftSyncState] = useState<{
+    tone: 'muted' | 'saving' | 'success' | 'error';
+    message: string;
+  }>({ tone: 'muted', message: 'Autosave is ready.' });
 
   const richEditorRef = useRef<HTMLDivElement | null>(null);
   const visualEditorRef = useRef<HTMLDivElement | null>(null);
   const sourceRef = useRef<HTMLTextAreaElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
+  const autosavePromiseRef = useRef<Promise<DraftRecord | null> | null>(null);
+  const autosaveQueuedRef = useRef(false);
+  const latestDraftRef = useRef<ComposeDraft | null>(draft);
+  const lastSavedSnapshotRef = useRef('');
   const hydrateEditorRef = useRef(true);
 
   useEffect(() => {
     setForm(draft);
+    latestDraftRef.current = draft;
+    lastSavedSnapshotRef.current = buildDraftSnapshot(draft);
+    setDraftSyncState({
+      tone: 'muted',
+      message: draft?.id ? 'Draft loaded.' : 'Autosave is ready.',
+    });
     hydrateEditorRef.current = true;
     if (draft?.htmlBody) {
       setHtmlStyles(sanitizeEmailPreviewFragment(draft.htmlBody).styles);
@@ -117,16 +133,118 @@ export function ComposeModal({
     };
   }
 
+  function buildDraftSnapshot(nextDraft: ComposeDraft | null) {
+    if (!nextDraft) return '';
+    return JSON.stringify({
+      domainId: nextDraft.domainId,
+      mailboxId: nextDraft.mailboxId,
+      threadId: nextDraft.threadId,
+      fromAddress: nextDraft.fromAddress,
+      to: nextDraft.to,
+      cc: nextDraft.cc,
+      bcc: nextDraft.bcc,
+      subject: nextDraft.subject,
+      textBody: nextDraft.textBody,
+      htmlBody: nextDraft.htmlBody,
+      attachments: nextDraft.attachments.map((attachment) => attachment.id),
+    });
+  }
+
+  function hasMeaningfulDraftContent(nextDraft: ComposeDraft | null) {
+    if (!nextDraft) return false;
+    return Boolean(
+      nextDraft.subject.trim()
+      || nextDraft.textBody.trim()
+      || nextDraft.htmlBody.trim()
+      || nextDraft.to.length
+      || nextDraft.cc.length
+      || nextDraft.bcc.length
+      || nextDraft.attachments.length,
+    );
+  }
+
+  async function persistDraft(options: { quiet?: boolean; force?: boolean; reason?: 'autosave' | 'manual' | 'send' } = {}) {
+    const quiet = options.quiet ?? true;
+    const force = options.force ?? false;
+    const reason = options.reason ?? 'autosave';
+    const nextDraft = syncDraftFromEditors() || latestDraftRef.current;
+    if (!nextDraft) return null;
+    latestDraftRef.current = nextDraft;
+
+    const snapshot = buildDraftSnapshot(nextDraft);
+    const hasContent = hasMeaningfulDraftContent(nextDraft);
+    const isDirty = snapshot !== lastSavedSnapshotRef.current;
+    if (!force && (!isDirty || (!hasContent && !nextDraft.id))) {
+      return null;
+    }
+
+    if (autosavePromiseRef.current) {
+      autosaveQueuedRef.current = true;
+      await autosavePromiseRef.current.catch(() => null);
+      const latestSnapshot = buildDraftSnapshot(latestDraftRef.current);
+      if (!force && latestSnapshot === lastSavedSnapshotRef.current) {
+        return null;
+      }
+      return persistDraft(options);
+    }
+
+    setDraftSyncState({
+      tone: 'saving',
+      message: reason === 'send' ? 'Syncing draft before send...' : 'Saving draft...',
+    });
+
+    const savePromise = onSaveDraft(nextDraft, quiet);
+    autosavePromiseRef.current = savePromise;
+
+    try {
+      const savedDraft = await savePromise;
+      lastSavedSnapshotRef.current = snapshot;
+      if (savedDraft?.id) {
+        setForm((current) => {
+          if (!current) return current;
+          const nextCurrent = { ...current, id: savedDraft.id };
+          latestDraftRef.current = nextCurrent;
+          return nextCurrent;
+        });
+      }
+      setDraftSyncState({
+        tone: 'success',
+        message: reason === 'manual' ? 'Draft saved.' : 'Draft synced.',
+      });
+      return savedDraft;
+    } catch (error) {
+      setDraftSyncState({
+        tone: 'error',
+        message: error instanceof Error ? error.message : 'Draft save failed.',
+      });
+      throw error;
+    } finally {
+      autosavePromiseRef.current = null;
+      if (autosaveQueuedRef.current) {
+        autosaveQueuedRef.current = false;
+        window.setTimeout(() => {
+          void persistDraft({ quiet: true, force: false, reason: 'autosave' }).catch(console.error);
+        }, 250);
+      }
+    }
+  }
+
   function scheduleAutosave(nextDraft: ComposeDraft | null) {
     if (!nextDraft) return;
+    latestDraftRef.current = nextDraft;
+    const snapshot = buildDraftSnapshot(nextDraft);
+    if (snapshot === lastSavedSnapshotRef.current) return;
+    if (!hasMeaningfulDraftContent(nextDraft) && !nextDraft.id) return;
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+    setDraftSyncState({ tone: 'muted', message: 'Unsaved changes.' });
     autosaveTimerRef.current = window.setTimeout(() => {
-      onSaveDraft(nextDraft, true).catch(console.error);
-    }, 1200);
+      void persistDraft({ quiet: true, force: false, reason: 'autosave' }).catch(console.error);
+    }, 3200);
   }
 
   useEffect(() => {
     if (!form) return;
+    latestDraftRef.current = form;
     if (hydrateEditorRef.current) {
       const html = form.htmlBody || textToComposeHtml(form.textBody || '');
       if (richEditorRef.current) {
@@ -155,7 +273,10 @@ export function ComposeModal({
   if (!form) return null;
 
   function updateField<K extends keyof ComposeDraft>(field: K, value: ComposeDraft[K]) {
-    setForm((current) => (current ? { ...current, [field]: value } : current));
+    setForm((current) => {
+      if (!current) return current;
+      return { ...current, [field]: value };
+    });
   }
 
   function setHtmlDocument(html: string) {
@@ -226,16 +347,9 @@ export function ComposeModal({
   }
 
   async function handleSaveDraft(quiet = false) {
-    const nextDraft = syncDraftFromEditors();
-    if (!nextDraft) return;
     setBusy(true);
     try {
-      const savedDraft = await onSaveDraft(nextDraft, quiet);
-      if (savedDraft) {
-        setForm((current) => (current ? { ...current, id: savedDraft.id } : current));
-      } else {
-        setForm(nextDraft);
-      }
+      await persistDraft({ quiet, force: true, reason: 'manual' });
     } finally {
       setBusy(false);
     }
@@ -243,15 +357,21 @@ export function ComposeModal({
 
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
     const nextDraft = syncDraftFromEditors();
     if (!nextDraft) return;
     setBusy(true);
     try {
+      const savedDraft = await persistDraft({ quiet: true, force: !nextDraft.id, reason: 'send' });
+      const syncedDraft = savedDraft?.id ? { ...nextDraft, id: savedDraft.id } : nextDraft;
       await onSend({
-        ...nextDraft,
-        to: parseInlineAddressList(formatAddresses(nextDraft.to)),
-        cc: parseInlineAddressList(formatAddresses(nextDraft.cc)),
-        bcc: parseInlineAddressList(formatAddresses(nextDraft.bcc)),
+        ...syncedDraft,
+        to: parseInlineAddressList(formatAddresses(syncedDraft.to)),
+        cc: parseInlineAddressList(formatAddresses(syncedDraft.cc)),
+        bcc: parseInlineAddressList(formatAddresses(syncedDraft.bcc)),
       });
     } finally {
       setBusy(false);
@@ -403,6 +523,11 @@ export function ComposeModal({
               <div className="eyebrow">Compose</div>
               <h2>{form.id ? 'Edit draft' : 'New message'}</h2>
               <p>{composeNotice}</p>
+            </div>
+            <div className={`compose-sync-pill ${draftSyncState.tone}`}>
+              {draftSyncState.tone === 'saving' ? <Loader2 size={14} className="spin" /> : null}
+              {draftSyncState.tone === 'success' ? <CheckCircle2 size={14} /> : null}
+              {draftSyncState.message}
             </div>
             <button type="button" className="icon-button" onClick={onClose} aria-label="Close compose">
               <X size={18} />
