@@ -63,7 +63,7 @@ const state = {
   mailboxId: null,
   mailboxEditorId: null,
   htmlTemplateEditorId: null,
-  status: 'Booting mail console...',
+  status: 'Loading workspace...',
   compose: null,
   realtime: {
     socket: null,
@@ -1036,9 +1036,11 @@ function renderSidebar() {
   `;
 
   refs.userCard.innerHTML = state.user ? `
-    <strong>${escapeHtml(state.user.display_name || state.user.email)}</strong><br>
-    ${escapeHtml(state.user.email)}<br>
-    <button class="button" id="logoutButton" type="button">Sign out</button>
+    <div class="user-card-stack">
+      <div class="user-card-name">${escapeHtml(state.user.display_name || state.user.email)}</div>
+      <div class="user-card-email">${escapeHtml(state.user.email)}</div>
+      <button class="button user-card-button" id="logoutButton" type="button">Sign out</button>
+    </div>
   ` : '<span class="muted">Not signed in.</span>';
 
   const logoutButton = document.getElementById('logoutButton');
@@ -1300,7 +1302,7 @@ function renderMailView() {
   const mailboxFilter = state.mailboxId ? getMailboxById(state.mailboxId) : null;
   const emptyMessage = state.data.domains.length
     ? `No messages in ${mailboxFilter?.email_address || 'your inbox'} yet. Incoming mail will appear here after the alias route processes a message.`
-    : 'Add a domain, mailbox, and alias rule to start receiving mail in the console.';
+    : 'Add a domain, mailbox, and alias rule to start receiving mail here.';
   refs.contentView.innerHTML = `
     <div class="mail-layout">
       <section class="split-panel">
@@ -1391,7 +1393,7 @@ function renderConnectionsView() {
               </select>
             </label>
             <div class="muted">Stored encrypted on the Worker. Current: ${escapeHtml(gemini?.secretMask || 'Not connected')}</div>
-            <div class="muted">Gemini is limited to free-tier email composition and rewrite models in this console.</div>
+            <div class="muted">Gemini is limited to free-tier email composition and rewrite models in this app.</div>
             <button class="button primary" type="submit">Save Gemini Connection</button>
           </form>
           <form id="groqForm" class="stack">
@@ -1592,7 +1594,7 @@ function renderDomainsView() {
           <label class="label">Display Name<input name="displayName" placeholder="Sales Desk" value="${escapeHtml(editingMailbox?.display_name || '')}"></label>
           <label class="label">Signature Text<input name="signatureText" placeholder="Regards, Sales Desk" value="${escapeHtml(editingMailbox?.signature_text || '')}"></label>
           <label class="label full">Signature HTML<textarea name="signatureHtml" placeholder="<p>Regards,<br>Sales Desk</p>">${escapeHtml(editingMailbox?.signature_html || '')}</textarea></label>
-          <label class="label"><input type="checkbox" name="isDefaultSender" ${editingMailbox?.is_default_sender ? 'checked' : ''}> Default sender for domain</label>
+          <label class="label checkbox-row"><input type="checkbox" name="isDefaultSender" ${editingMailbox?.is_default_sender ? 'checked' : ''}><span>Default sender for domain</span></label>
           <div class="full inline-actions">
             <button class="button" type="submit">${editingMailbox ? 'Save Mailbox' : 'Create Mailbox'}</button>
             ${editingMailbox ? '<button class="button" type="button" id="cancelMailboxEditButton">Cancel</button>' : ''}
@@ -1847,14 +1849,14 @@ function renderAliasesView() {
               <option value="inbox_and_forward">Inbox + forward</option>
             </select>
           </label>
-          <label class="label"><input type="checkbox" name="isCatchAll"> Catch-all rule</label>
+          <label class="label checkbox-row"><input type="checkbox" name="isCatchAll"><span>Catch-all rule</span></label>
           <div class="label full">
             Forward destinations
             <div class="chip-list">
               ${state.data.forwardDestinations.map((destination) => `
-                <label class="chip">
+                <label class="chip checkbox-chip">
                   <input type="checkbox" name="forwardDestinationIds" value="${destination.id}">
-                  ${escapeHtml(destination.email)}
+                  <span>${escapeHtml(destination.email)}</span>
                 </label>
               `).join('') || '<span class="muted">Add destinations first.</span>'}
             </div>

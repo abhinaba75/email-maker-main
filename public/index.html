@@ -4,8 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Email By Abhinaba Das</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260409b">
-  <link rel="stylesheet" href="/styles.css?v=20260409b">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260409d">
+  <link rel="stylesheet" href="/styles.css?v=20260409d">
 </head>
 <body>
   <div id="bootScreen" class="boot-screen">
@@ -35,34 +38,41 @@
 
   <div id="appShell" class="desktop hidden">
     <div class="window shell-window">
-      <div class="title-bar">
-        <div class="title-bar-text" id="windowTitle">Email By Abhinaba Das</div>
-        <div class="title-bar-controls">
-          <button aria-label="Minimize" data-window-control="minimize"></button>
-          <button aria-label="Maximize" data-window-control="maximize"></button>
-          <button aria-label="Close" data-window-control="close"></button>
+      <div class="shell-topbar">
+        <div class="title-bar">
+          <div class="title-bar-copy">
+            <div class="title-bar-text" id="windowTitle">Email By Abhinaba Das</div>
+            <div class="title-bar-subtitle">Inbox, domains, forwarding, templates, and AI composition in one workspace</div>
+          </div>
+          <div class="title-bar-controls">
+            <button aria-label="Minimize" data-window-control="minimize"></button>
+            <button aria-label="Maximize" data-window-control="maximize"></button>
+            <button aria-label="Close" data-window-control="close"></button>
+          </div>
         </div>
-      </div>
-      <div class="menu-bar">
-        <span data-menu="File">File</span>
-        <span data-menu="Edit">Edit</span>
-        <span data-menu="View">View</span>
-        <span data-menu="Tools">Tools</span>
-        <span data-menu="Window">Window</span>
-        <span data-menu="Help">Help</span>
-      </div>
-      <div class="toolbar">
-        <button class="tool-button" id="newMessageButton">New Message</button>
-        <button class="tool-button" id="replyButton">Reply</button>
-        <button class="tool-button" id="forwardButton">Forward</button>
-        <button class="tool-button" id="archiveButton">Archive</button>
-        <button class="tool-button" id="trashButton">Delete</button>
-        <button class="tool-button" id="refreshButton">Refresh</button>
-        <div class="toolbar-spacer"></div>
-        <label class="search-wrap">
-          <span>Find</span>
-          <input id="searchBox" type="search" placeholder="Search mail">
-        </label>
+        <div class="menu-bar">
+          <span data-menu="File">File</span>
+          <span data-menu="Edit">Edit</span>
+          <span data-menu="View">View</span>
+          <span data-menu="Tools">Tools</span>
+          <span data-menu="Window">Window</span>
+          <span data-menu="Help">Help</span>
+        </div>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button class="tool-button" id="newMessageButton">New Message</button>
+            <button class="tool-button" id="replyButton">Reply</button>
+            <button class="tool-button" id="forwardButton">Forward</button>
+            <button class="tool-button" id="archiveButton">Archive</button>
+            <button class="tool-button" id="trashButton">Delete</button>
+            <button class="tool-button" id="refreshButton">Refresh</button>
+          </div>
+          <div class="toolbar-spacer"></div>
+          <label class="search-wrap">
+            <span>Find</span>
+            <input id="searchBox" type="search" placeholder="Search mail">
+          </label>
+        </div>
       </div>
       <div class="main-layout">
         <aside class="sidebar pane bevel-inset">
@@ -87,6 +97,6 @@
   <div id="eggOverlay" class="overlay hidden"></div>
   <div id="effectLayer" class="effect-layer" aria-hidden="true"></div>
 
-  <script type="module" src="/app.js?v=20260409b"></script>
+  <script type="module" src="/app.js?v=20260409d"></script>
 </body>
 </html>
