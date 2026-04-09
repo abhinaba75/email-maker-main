@@ -243,6 +243,32 @@ export function buildAiAssistRequest({
     tone: toneKey,
     outputMode: normalizedOutputMode,
     useSelection,
+    responseSchema: useSelection
+      ? {
+          type: 'object',
+          properties: {
+            replacementText: { type: 'string' },
+          },
+          required: ['replacementText'],
+        }
+      : normalizedOutputMode === 'html_email'
+        ? {
+            type: 'object',
+            properties: {
+              subject: { type: 'string' },
+              htmlBody: { type: 'string' },
+              textBody: { type: 'string' },
+            },
+            required: ['subject', 'htmlBody', 'textBody'],
+          }
+        : {
+            type: 'object',
+            properties: {
+              subject: { type: 'string' },
+              textBody: { type: 'string' },
+            },
+            required: ['subject', 'textBody'],
+          },
     systemInstruction: normalizedOutputMode === 'html_email'
       ? 'You are an expert email copywriter and HTML email designer. Produce visually strong, email-safe HTML with table-based layout, inline styles, clear hierarchy, strong spacing, and polished marketing-quality presentation. Follow the request exactly and return machine-readable JSON only.'
       : 'You are a precise email writing assistant. Follow the requested transformation exactly and return machine-readable JSON only.',

@@ -1614,16 +1614,17 @@ async function handleAiAssist(request, env, user) {
           || DEFAULT_GEMINI_MODEL,
       ).trim() || DEFAULT_GEMINI_MODEL;
 
-  const result = provider === 'groq'
-    ? await generateGroqChat(connection.secret, {
-        systemInstruction: aiRequest.systemInstruction,
-        prompt: aiRequest.prompt,
-      })
-    : await generateGeminiContent(connection.secret, {
-        model,
-        systemInstruction: aiRequest.systemInstruction,
-        prompt: aiRequest.prompt,
-      });
+    const result = provider === 'groq'
+      ? await generateGroqChat(connection.secret, {
+          systemInstruction: aiRequest.systemInstruction,
+          prompt: aiRequest.prompt,
+        })
+      : await generateGeminiContent(connection.secret, {
+          model,
+          systemInstruction: aiRequest.systemInstruction,
+          prompt: aiRequest.prompt,
+          responseSchema: aiRequest.responseSchema,
+        });
 
   return json({
     provider,

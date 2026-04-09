@@ -80,8 +80,9 @@ export async function generateGeminiContent(apiKey, {
   systemInstruction = '',
   prompt,
   temperature = 0.5,
+  responseSchema = null,
 } = {}) {
-  const body = {
+  const createBody = (mimeType = 'application/json', schema = responseSchema) => ({
     contents: [
       {
         role: 'user',
@@ -90,35 +91,61 @@ export async function generateGeminiContent(apiKey, {
     ],
     generationConfig: {
       temperature,
-      responseMimeType: 'application/json',
+      responseMimeType: mimeType,
+      ...(schema ? { responseSchema: schema } : {}),
     },
-  };
+  });
 
-  if (systemInstruction) {
-    body.systemInstruction = {
-      parts: [{ text: systemInstruction }],
-    };
-  }
-
-  const responseBody = await geminiRequest(
+  const requestGenerateContent = async (body) => geminiRequest(
     apiKey,
     `/${normalizeModelName(model)}:generateContent`,
     {
       method: 'POST',
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ...body,
+        ...(systemInstruction
+          ? {
+              systemInstruction: {
+                parts: [{ text: systemInstruction }],
+              },
+            }
+          : {}),
+      }),
     },
   );
 
-  const text = extractGeminiText(responseBody);
-  if (!text) {
-    const error = new Error(extractGeminiErrorMessage(responseBody));
+  let primaryError = null;
+
+  try {
+    const responseBody = await requestGenerateContent(createBody('application/json', responseSchema));
+    const text = extractGeminiText(responseBody);
+    if (!text) {
+      const error = new Error(extractGeminiErrorMessage(responseBody));
+      error.status = 502;
+      error.body = responseBody;
+      throw error;
+    }
+    return {
+      body: responseBody,
+      text,
+    };
+  } catch (error) {
+    primaryError = error;
+  }
+
+  const fallbackResponse = await requestGenerateContent(createBody('text/plain', null)).catch((fallbackError) => {
+    throw primaryError || fallbackError;
+  });
+  const fallbackText = extractGeminiText(fallbackResponse);
+  if (!fallbackText) {
+    const error = new Error(extractGeminiErrorMessage(fallbackResponse));
     error.status = 502;
-    error.body = responseBody;
-    throw error;
+    error.body = fallbackResponse;
+    throw primaryError || error;
   }
 
   return {
-    body: responseBody,
-    text,
+    body: fallbackResponse,
+    text: fallbackText,
   };
 }
