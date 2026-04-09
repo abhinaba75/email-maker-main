@@ -212,6 +212,18 @@ export function buildAiAssistRequest({
     normalizedOutputMode === 'html_email'
       ? 'Output mode: HTML email. Return email-ready HTML markup when returning a full draft.'
       : 'Output mode: Plain text email draft.',
+    normalizedOutputMode === 'html_email'
+      ? [
+          'HTML email requirements:',
+          '- Build a visually polished, modern email, not a plain note.',
+          '- Use email-safe table-based structure with inline styles.',
+          '- Use a clear visual hierarchy: header/hero, body sections, spacing, and at least one strong CTA when appropriate.',
+          '- Make the layout responsive with max-width containers and width:100% fallbacks.',
+          '- Keep images optional unless the user explicitly asks for them.',
+          '- Do not include scripts, forms, markdown fences, or explanatory commentary.',
+          '- Return complete ready-to-send HTML in htmlBody and a matching plain-text fallback in textBody.',
+        ].join('\n')
+      : '',
     cleanPrompt ? `User request:\n${cleanPrompt}` : '',
     cleanSubject ? `Current subject:\n${cleanSubject}` : '',
     to.length ? `To recipients:\n${to.map((item) => item?.email || item).filter(Boolean).join(', ')}` : '',
@@ -231,7 +243,9 @@ export function buildAiAssistRequest({
     tone: toneKey,
     outputMode: normalizedOutputMode,
     useSelection,
-    systemInstruction: 'You are a precise email writing assistant. Follow the requested transformation exactly and return machine-readable JSON only.',
+    systemInstruction: normalizedOutputMode === 'html_email'
+      ? 'You are an expert email copywriter and HTML email designer. Produce visually strong, email-safe HTML with table-based layout, inline styles, clear hierarchy, strong spacing, and polished marketing-quality presentation. Follow the request exactly and return machine-readable JSON only.'
+      : 'You are a precise email writing assistant. Follow the requested transformation exactly and return machine-readable JSON only.',
     prompt: promptSections.join('\n\n'),
   };
 }

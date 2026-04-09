@@ -512,15 +512,28 @@ export function useAppController(): AppController {
     };
   }
 
-  async function handleThreadAction(action: 'archive' | 'trash' | 'delete') {
+  async function handleThreadAction(action: 'archive' | 'trash' | 'delete' | 'restore') {
     if (!selectedThread) throw new Error('Select a thread first.');
-    setStatus(action === 'delete' ? 'Deleting thread...' : 'Updating thread...');
+    const statusByAction = {
+      archive: 'Archiving thread...',
+      trash: 'Moving thread to trash...',
+      delete: 'Deleting thread...',
+      restore: 'Recovering thread from trash...',
+    } as const;
+    setStatus(statusByAction[action]);
     await api(`/api/threads/${selectedThread.id}/actions`, {
       method: 'POST',
       body: JSON.stringify({ action }),
     });
     setSelectedThread(null);
     await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: false });
+    const successByAction = {
+      archive: 'Thread archived.',
+      trash: 'Thread moved to trash.',
+      delete: 'Thread permanently deleted.',
+      restore: 'Thread recovered from trash.',
+    } as const;
+    setStatus(successByAction[action]);
   }
 
   async function emptyTrash() {
@@ -659,74 +672,119 @@ export function useAppController(): AppController {
   }
 
   async function saveComposeDraft(draft: ComposeDraft, quiet = false): Promise<DraftRecord | null> {
-    const payload = await api<{ draft?: DraftRecord }>('/api/drafts', {
-      method: 'POST',
-      body: JSON.stringify(draft),
-    });
-    if (!payload.draft) return null;
-    setData((current) => {
-      const nextDrafts = [payload.draft as DraftRecord, ...current.drafts.filter((item) => item.id !== payload.draft?.id)];
-      return { ...current, drafts: nextDrafts };
-    });
     if (!quiet) {
-      setStatus('Draft saved.');
+      setStatus('Saving draft...');
     }
-    return payload.draft || null;
+    try {
+      const payload = await api<{ draft?: DraftRecord }>('/api/drafts', {
+        method: 'POST',
+        body: JSON.stringify(draft),
+      });
+      if (!payload.draft) return null;
+      setData((current) => {
+        const nextDrafts = [payload.draft as DraftRecord, ...current.drafts.filter((item) => item.id !== payload.draft?.id)];
+        return { ...current, drafts: nextDrafts };
+      });
+      if (!quiet) {
+        setStatus('Draft saved.');
+      }
+      return payload.draft || null;
+    } catch (error) {
+      if (!quiet) {
+        setStatus(error instanceof Error ? error.message : 'Draft save failed.');
+      }
+      throw error;
+    }
   }
 
   async function uploadComposeAttachments(draft: ComposeDraft, files: FileList | File[]): Promise<UploadedAttachment[]> {
     const list = Array.from(files || []);
     if (!list.length) return draft.attachments;
-    let nextAttachments = [...draft.attachments];
-    for (const file of list) {
-      const formData = new FormData();
-      formData.append('file', file);
-      const payload = await api<{ attachment: UploadedAttachment }>('/api/uploads', {
-        method: 'POST',
-        body: formData,
-      });
-      nextAttachments = [...nextAttachments, payload.attachment];
+    setStatus(list.length > 1 ? 'Uploading attachments...' : 'Uploading attachment...');
+    try {
+      let nextAttachments = [...draft.attachments];
+      for (const file of list) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const payload = await api<{ attachment: UploadedAttachment }>('/api/uploads', {
+          method: 'POST',
+          body: formData,
+        });
+        nextAttachments = [...nextAttachments, payload.attachment];
+      }
+      setStatus(list.length > 1 ? 'Attachments uploaded.' : 'Attachment uploaded.');
+      return nextAttachments;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Attachment upload failed.');
+      throw error;
     }
-    return nextAttachments;
   }
 
   async function runComposeAiAction(draft: ComposeDraft, action: string, selectionText = ''): Promise<AiActionResult> {
-    const payload = await api<{ result?: AiActionResult }>('/api/ai/assist', {
-      method: 'POST',
-      body: JSON.stringify({
-        provider: draft.aiProvider,
-        model: draft.aiProvider === 'gemini' ? draft.aiModel : null,
-        tone: draft.aiTone,
-        action,
-        prompt: draft.aiPrompt || '',
-        outputMode: draft.editorMode === 'html' ? 'html_email' : 'plain_text',
-        subject: draft.subject,
-        textBody: draft.editorMode === 'html' ? draft.htmlBody : draft.textBody,
-        htmlBody: draft.htmlBody || '',
-        selectionText,
-        to: draft.to || [],
-        cc: draft.cc || [],
-        bcc: draft.bcc || [],
-      }),
-    });
-    return payload.result || {};
+    const providerLabel = draft.aiProvider === 'groq' ? 'Llama' : 'Gemini';
+    const actionLabel = action === 'compose'
+      ? 'Generating draft'
+      : action === 'proofread'
+        ? 'Fixing grammar'
+        : `${action.charAt(0).toUpperCase()}${action.slice(1)} text`;
+    setStatus(`${actionLabel} with ${providerLabel}...`);
+    try {
+      const payload = await api<{ result?: AiActionResult }>('/api/ai/assist', {
+        method: 'POST',
+        body: JSON.stringify({
+          provider: draft.aiProvider,
+          model: draft.aiProvider === 'gemini' ? draft.aiModel : null,
+          tone: draft.aiTone,
+          action,
+          prompt: draft.aiPrompt || '',
+          outputMode: draft.editorMode === 'html' ? 'html_email' : 'plain_text',
+          subject: draft.subject,
+          textBody: draft.editorMode === 'html' ? draft.htmlBody : draft.textBody,
+          htmlBody: draft.htmlBody || '',
+          selectionText,
+          to: draft.to || [],
+          cc: draft.cc || [],
+          bcc: draft.bcc || [],
+        }),
+      });
+      const result = payload.result || {};
+      const hasOutput = Boolean(
+        String(result.subject || '').trim()
+        || String(result.textBody || '').trim()
+        || String(result.htmlBody || '').trim()
+        || String(result.replacementText || '').trim(),
+      );
+      if (!hasOutput) {
+        throw new Error(`${providerLabel} returned an empty response.`);
+      }
+      setStatus('AI draft ready.');
+      return result;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : `${providerLabel} generation failed.`);
+      throw error;
+    }
   }
 
   async function sendCompose(draft: ComposeDraft) {
     setStatus('Sending message...');
-    await api('/api/send', {
-      method: 'POST',
-      body: JSON.stringify({
-        ...draft,
-        draftId: draft.id || null,
-      }),
-    });
-    setComposeSeed(null);
-    await refreshBootstrap();
-    if (view === 'mail' && folder === 'sent') {
-      await loadThreadsAction('sent', mailboxId, searchQuery);
+    try {
+      await api('/api/send', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...draft,
+          draftId: draft.id || null,
+        }),
+      });
+      setComposeSeed(null);
+      await refreshBootstrap();
+      if (view === 'mail' && folder === 'sent') {
+        await loadThreadsAction('sent', mailboxId, searchQuery);
+      }
+      setStatus('Message sent.');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Message send failed.');
+      throw error;
     }
-    setStatus('Message sent.');
   }
 
   async function downloadAttachment(attachmentId: string) {
@@ -888,6 +946,14 @@ export function useAppController(): AppController {
     archiveSelected: async () => {
       try {
         await handleThreadAction('archive');
+      } catch (error) {
+        showError(error);
+        throw error;
+      }
+    },
+    restoreSelected: async () => {
+      try {
+        await handleThreadAction('restore');
       } catch (error) {
         showError(error);
         throw error;

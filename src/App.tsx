@@ -39,7 +39,7 @@ function classifyStatus(status: string): { kind: 'ignore' | 'clear' | 'active' |
   if (/(failed|error|cannot|not allowed|invalid|missing|unsupported|denied|unavailable|not found)/i.test(value)) {
     return { kind: 'toast', tone: 'error', duration: 4600 };
   }
-  if (/(sent\.|saved\.|deleted\.|created\.|updated\.|connected\.|finished\.|provisioned\.|refreshed\.|emptied\.)$/i.test(value)) {
+  if (/(sent\.|saved\.|deleted\.|created\.|updated\.|connected\.|finished\.|provisioned\.|refreshed\.|emptied\.|uploaded\.|recovered\.)$/i.test(value) || /^AI draft ready\.$/i.test(value)) {
     return { kind: 'toast', tone: 'success', duration: 2800 };
   }
   return { kind: 'toast', tone: 'info', duration: 2800 };

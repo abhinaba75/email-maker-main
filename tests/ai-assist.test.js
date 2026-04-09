@@ -17,7 +17,10 @@ test('buildAiAssistRequest constrains compose to email HTML output when requeste
   assert.equal(request.outputMode, 'html_email');
   assert.equal(request.tone, 'friendly');
   assert.match(request.prompt, /Output mode: HTML email/i);
+  assert.match(request.prompt, /table-based structure with inline styles/i);
+  assert.match(request.prompt, /visually polished, modern email/i);
   assert.match(request.prompt, /Return a ready-to-send email subject, full HTML email body markup/i);
+  assert.match(request.systemInstruction, /expert email copywriter and HTML email designer/i);
 });
 
 test('buildAiAssistRequest uses selection mode for rewrite actions when text is highlighted', () => {

@@ -350,6 +350,8 @@ export function ComposeModal({
     setBusy(true);
     try {
       await persistDraft({ quiet, force: true, reason: 'manual' });
+    } catch (error) {
+      console.error(error);
     } finally {
       setBusy(false);
     }
@@ -373,6 +375,8 @@ export function ComposeModal({
         cc: parseInlineAddressList(formatAddresses(syncedDraft.cc)),
         bcc: parseInlineAddressList(formatAddresses(syncedDraft.bcc)),
       });
+    } catch (error) {
+      console.error(error);
     } finally {
       setBusy(false);
     }
@@ -386,6 +390,8 @@ export function ComposeModal({
     try {
       const attachments = await onUploadAttachments(nextDraft, files);
       setForm({ ...nextDraft, attachments });
+    } catch (error) {
+      console.error(error);
     } finally {
       setBusy(false);
     }
@@ -412,6 +418,8 @@ export function ComposeModal({
         }
         setForm((current) => (current ? { ...current, subject: nextSubject, htmlBody: nextHtml, textBody: stripHtmlToText(nextHtml) } : current));
       }
+    } catch (error) {
+      console.error(error);
     } finally {
       setBusy(false);
     }

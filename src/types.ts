@@ -247,6 +247,7 @@ export interface AppController {
   openReply: () => Promise<void>;
   openForward: () => Promise<void>;
   archiveSelected: () => Promise<void>;
+  restoreSelected: () => Promise<void>;
   trashSelected: () => Promise<void>;
   emptyTrash: () => Promise<void>;
   downloadAttachment: (attachmentId: string) => Promise<void>;

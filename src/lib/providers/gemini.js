@@ -57,6 +57,24 @@ export function extractGeminiText(responseBody) {
     .trim();
 }
 
+function extractGeminiErrorMessage(responseBody) {
+  const blockReason = responseBody?.promptFeedback?.blockReason;
+  const finishReason = responseBody?.candidates?.[0]?.finishReason;
+  const safetyMessage = responseBody?.promptFeedback?.safetyRatings
+    ?.filter((item) => item?.blocked)
+    ?.map((item) => item?.category)
+    ?.filter(Boolean)
+    ?.join(', ');
+
+  if (blockReason) {
+    return `Gemini blocked this request (${blockReason}${safetyMessage ? `: ${safetyMessage}` : ''}).`;
+  }
+  if (finishReason && finishReason !== 'STOP') {
+    return `Gemini stopped without returning usable text (${finishReason}).`;
+  }
+  return 'Gemini returned an empty response.';
+}
+
 export async function generateGeminiContent(apiKey, {
   model = DEFAULT_GEMINI_MODEL,
   systemInstruction = '',
@@ -72,12 +90,12 @@ export async function generateGeminiContent(apiKey, {
     ],
     generationConfig: {
       temperature,
+      responseMimeType: 'application/json',
     },
   };
 
   if (systemInstruction) {
     body.systemInstruction = {
-      role: 'system',
       parts: [{ text: systemInstruction }],
     };
   }
@@ -91,8 +109,16 @@ export async function generateGeminiContent(apiKey, {
     },
   );
 
+  const text = extractGeminiText(responseBody);
+  if (!text) {
+    const error = new Error(extractGeminiErrorMessage(responseBody));
+    error.status = 502;
+    error.body = responseBody;
+    throw error;
+  }
+
   return {
     body: responseBody,
-    text: extractGeminiText(responseBody),
+    text,
   };
 }
