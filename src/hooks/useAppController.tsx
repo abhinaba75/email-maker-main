@@ -644,6 +644,20 @@ export function useAppController(): AppController {
     setStatus('Draft deleted.');
   }
 
+  async function deleteAllDrafts() {
+    setStatus('Deleting all drafts...');
+    await api('/api/drafts', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'delete_all' }),
+    });
+    setData((current) => ({
+      ...current,
+      drafts: [],
+    }));
+    setComposeSeed((current) => (current?.id ? null : current));
+    setStatus('All drafts deleted.');
+  }
+
   async function saveComposeDraft(draft: ComposeDraft, quiet = false): Promise<DraftRecord | null> {
     const payload = await api<{ draft?: DraftRecord }>('/api/drafts', {
       method: 'POST',
@@ -909,6 +923,7 @@ export function useAppController(): AppController {
     deleteAliasRule,
     saveForwardDestination,
     deleteDraft,
+    deleteAllDrafts,
     sendCompose,
     saveComposeDraft,
     uploadComposeAttachments,

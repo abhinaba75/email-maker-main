@@ -15,6 +15,20 @@ export function DraftsView({ controller }: DraftsViewProps) {
             <div className="eyebrow">Saved work</div>
             <h3>Drafts</h3>
           </div>
+          {controller.data.drafts.length ? (
+            <button
+              type="button"
+              className="toolbar-button danger"
+              onClick={() => {
+                if (window.confirm(`Delete all ${controller.data.drafts.length} drafts? This cannot be undone.`)) {
+                  void controller.deleteAllDrafts().catch(console.error);
+                }
+              }}
+            >
+              <Trash2 size={15} />
+              Delete all drafts
+            </button>
+          ) : null}
         </div>
         <div className="data-table-wrap">
           <table className="data-table">

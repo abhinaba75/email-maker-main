@@ -39,6 +39,7 @@ import {
   listThreadsPage,
   listAliasRulesPage,
   purgeTrashFolder,
+  purgeDrafts,
   recordIngestFailure,
   saveConnection,
   saveDraft,
@@ -1327,6 +1328,18 @@ async function handleDrafts(request, env, user, pathParts) {
 
   if (request.method === 'POST' && pathParts.length === 2) {
     const body = await readJson(request);
+    if (body.action === 'delete_all') {
+      const result = await purgeDrafts(env.DB, user.id);
+      await Promise.all(
+        (result.storageKeys || []).map((key) => env.MAIL_BUCKET.delete(key).catch(() => null)),
+      );
+      await publishRealtimeEvent(env, user.id, {
+        type: 'draft.updated',
+        bulk: true,
+        action: 'delete_all',
+      });
+      return json({ ok: true, ...result });
+    }
     const draft = await saveDraft(env.DB, {
       id: body.id || null,
       userId: user.id,

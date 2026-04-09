@@ -1587,6 +1587,45 @@ export async function deleteDraft(db, userId, draftId) {
   await db.prepare(`DELETE FROM drafts WHERE user_id = ?1 AND id = ?2`).bind(userId, draftId).run();
 }
 
+export async function purgeDrafts(db, userId) {
+  const draftRows = await all(
+    db.prepare(
+      `SELECT id, attachment_json
+       FROM drafts
+       WHERE user_id = ?1`,
+    ).bind(userId),
+  );
+
+  const storageKeys = [
+    ...new Set(
+      draftRows.flatMap((row) => {
+        try {
+          const attachments = JSON.parse(row.attachment_json || '[]');
+          return (Array.isArray(attachments) ? attachments : [])
+            .map((attachment) => attachment?.r2Key || attachment?.r2_key || null)
+            .filter(Boolean);
+        } catch {
+          return [];
+        }
+      }),
+    ),
+  ];
+
+  if (!draftRows.length) {
+    return {
+      deletedDraftCount: 0,
+      storageKeys: [],
+    };
+  }
+
+  await db.prepare(`DELETE FROM drafts WHERE user_id = ?1`).bind(userId).run();
+
+  return {
+    deletedDraftCount: draftRows.length,
+    storageKeys,
+  };
+}
+
 export async function purgeTrashFolder(db, userId) {
   const [messageRows, attachmentRows, threadRows] = await Promise.all([
     all(

@@ -263,6 +263,7 @@ export interface AppController {
   deleteAliasRule: (aliasId: string) => Promise<void>;
   saveForwardDestination: (input: Record<string, unknown>) => Promise<void>;
   deleteDraft: (draftId: string) => Promise<void>;
+  deleteAllDrafts: () => Promise<void>;
   sendCompose: (draft: ComposeDraft) => Promise<void>;
   saveComposeDraft: (draft: ComposeDraft, quiet?: boolean) => Promise<DraftRecord | null>;
   uploadComposeAttachments: (draft: ComposeDraft, files: FileList | File[]) => Promise<UploadedAttachment[]>;
