@@ -247,6 +247,7 @@ export interface AppController {
   openForward: () => Promise<void>;
   archiveSelected: () => Promise<void>;
   trashSelected: () => Promise<void>;
+  emptyTrash: () => Promise<void>;
   downloadAttachment: (attachmentId: string) => Promise<void>;
   saveConnection: (provider: 'cloudflare' | 'resend' | 'gemini' | 'groq', input: Record<string, unknown>) => Promise<void>;
   provisionDomain: (input: Record<string, unknown>) => Promise<void>;
@@ -260,6 +261,7 @@ export interface AppController {
   saveAliasRule: (input: Record<string, unknown>) => Promise<void>;
   deleteAliasRule: (aliasId: string) => Promise<void>;
   saveForwardDestination: (input: Record<string, unknown>) => Promise<void>;
+  deleteDraft: (draftId: string) => Promise<void>;
   sendCompose: (draft: ComposeDraft) => Promise<void>;
   saveComposeDraft: (draft: ComposeDraft, quiet?: boolean) => Promise<DraftRecord | null>;
   uploadComposeAttachments: (draft: ComposeDraft, files: FileList | File[]) => Promise<UploadedAttachment[]>;

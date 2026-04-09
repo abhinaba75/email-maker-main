@@ -1437,6 +1437,58 @@ export async function applyThreadAction(db, userId, threadId, action) {
   return getThread(db, userId, threadId);
 }
 
+export async function deleteThreadPermanently(db, userId, threadId) {
+  const thread = await first(
+    db.prepare(`SELECT id, folder FROM threads WHERE user_id = ?1 AND id = ?2`).bind(userId, threadId),
+  );
+  if (!thread || thread.folder !== 'trash') return null;
+
+  const [messageRows, attachmentRows] = await Promise.all([
+    all(
+      db.prepare(
+        `SELECT id, raw_r2_key
+         FROM messages
+         WHERE user_id = ?1
+           AND thread_id = ?2`,
+      ).bind(userId, threadId),
+    ),
+    all(
+      db.prepare(
+        `SELECT a.r2_key
+         FROM attachments a
+         JOIN messages m ON m.id = a.message_id
+         WHERE a.user_id = ?1
+           AND m.thread_id = ?2`,
+      ).bind(userId, threadId),
+    ),
+  ]);
+
+  const storageKeys = [
+    ...new Set([
+      ...messageRows.map((row) => row.raw_r2_key).filter(Boolean),
+      ...attachmentRows.map((row) => row.r2_key).filter(Boolean),
+    ]),
+  ];
+
+  await db
+    .prepare(
+      `DELETE FROM threads
+       WHERE user_id = ?1
+         AND id = ?2
+         AND folder = 'trash'`,
+    )
+    .bind(userId, threadId)
+    .run();
+
+  return {
+    deleted: true,
+    threadId,
+    deletedMessageCount: messageRows.length,
+    deletedThreadCount: 1,
+    storageKeys,
+  };
+}
+
 export async function listDrafts(db, userId) {
   const rows = await all(
     db.prepare(
@@ -1533,6 +1585,83 @@ export async function saveDraft(db, data) {
 
 export async function deleteDraft(db, userId, draftId) {
   await db.prepare(`DELETE FROM drafts WHERE user_id = ?1 AND id = ?2`).bind(userId, draftId).run();
+}
+
+export async function purgeTrashFolder(db, userId) {
+  const [messageRows, attachmentRows, threadRows] = await Promise.all([
+    all(
+      db.prepare(
+        `SELECT id, raw_r2_key, thread_id
+         FROM messages
+         WHERE user_id = ?1
+           AND folder = 'trash'`,
+      ).bind(userId),
+    ),
+    all(
+      db.prepare(
+        `SELECT a.r2_key
+         FROM attachments a
+         JOIN messages m ON m.id = a.message_id
+         WHERE a.user_id = ?1
+           AND m.folder = 'trash'`,
+      ).bind(userId),
+    ),
+    all(
+      db.prepare(
+        `SELECT id
+         FROM threads
+         WHERE user_id = ?1
+           AND folder = 'trash'`,
+      ).bind(userId),
+    ),
+  ]);
+
+  const messageIds = messageRows.map((row) => row.id);
+  const threadIds = threadRows.map((row) => row.id);
+  const storageKeys = [
+    ...new Set([
+      ...messageRows.map((row) => row.raw_r2_key).filter(Boolean),
+      ...attachmentRows.map((row) => row.r2_key).filter(Boolean),
+    ]),
+  ];
+
+  if (!messageIds.length) {
+    return {
+      deletedMessageCount: 0,
+      deletedThreadCount: 0,
+      storageKeys: [],
+      threadIds: [],
+    };
+  }
+
+  await db
+    .prepare(
+      `DELETE FROM messages
+       WHERE user_id = ?1
+         AND folder = 'trash'`,
+    )
+    .bind(userId)
+    .run();
+
+  await db
+    .prepare(
+      `DELETE FROM threads
+       WHERE user_id = ?1
+         AND id NOT IN (
+           SELECT DISTINCT thread_id
+           FROM messages
+           WHERE user_id = ?1
+         )`,
+    )
+    .bind(userId)
+    .run();
+
+  return {
+    deletedMessageCount: messageIds.length,
+    deletedThreadCount: threadIds.length,
+    storageKeys,
+    threadIds,
+  };
 }
 
 export async function getAttachment(db, userId, attachmentId) {

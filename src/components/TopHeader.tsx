@@ -4,6 +4,7 @@ import type { ViewId } from '../types';
 interface TopHeaderProps {
   view: ViewId;
   mailTitle?: string;
+  isTrashView?: boolean;
   searchQuery: string;
   onSearchChange: (value: string) => void;
   onSearchSubmit: () => void;
@@ -12,8 +13,10 @@ interface TopHeaderProps {
   onForward: () => void;
   onArchive: () => void;
   onTrash: () => void;
+  onEmptyTrash: () => void;
   onRefresh: () => void;
   canActOnThread: boolean;
+  canEmptyTrash: boolean;
   subtitle?: string | null;
 }
 
@@ -29,6 +32,7 @@ const TITLES: Record<ViewId, string> = {
 export function TopHeader({
   view,
   mailTitle,
+  isTrashView,
   searchQuery,
   onSearchChange,
   onSearchSubmit,
@@ -37,8 +41,10 @@ export function TopHeader({
   onForward,
   onArchive,
   onTrash,
+  onEmptyTrash,
   onRefresh,
   canActOnThread,
+  canEmptyTrash,
   subtitle,
 }: TopHeaderProps) {
   const title = view === 'mail' ? (mailTitle || 'Inbox') : TITLES[view];
@@ -87,8 +93,14 @@ export function TopHeader({
           </button>
           <button type="button" className="toolbar-button" onClick={onTrash} disabled={!canActOnThread}>
             <Trash2 size={16} />
-            Delete
+            {isTrashView ? 'Delete forever' : 'Delete'}
           </button>
+          {isTrashView ? (
+            <button type="button" className="toolbar-button danger" onClick={onEmptyTrash} disabled={!canEmptyTrash}>
+              <Trash2 size={16} />
+              Empty trash
+            </button>
+          ) : null}
           <button type="button" className="toolbar-button" onClick={onRefresh}>
             <RefreshCcw size={16} />
             Refresh

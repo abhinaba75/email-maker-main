@@ -1,3 +1,4 @@
+import { Trash2 } from 'lucide-react';
 import { formatDateTime } from '../lib/format';
 import type { AppController } from '../types';
 
@@ -32,9 +33,23 @@ export function DraftsView({ controller }: DraftsViewProps) {
                   <td>{draft.subject || '(no subject)'}</td>
                   <td>{formatDateTime(draft.updated_at)}</td>
                   <td>
-                    <button type="button" className="toolbar-button" onClick={() => void controller.openCompose(draft).catch(console.error)}>
-                      Open
-                    </button>
+                    <div className="table-actions">
+                      <button type="button" className="toolbar-button" onClick={() => void controller.openCompose(draft).catch(console.error)}>
+                        Open
+                      </button>
+                      <button
+                        type="button"
+                        className="toolbar-button danger"
+                        onClick={() => {
+                          if (window.confirm(`Delete draft "${draft.subject || '(no subject)'}"?`)) {
+                            void controller.deleteDraft(draft.id).catch(console.error);
+                          }
+                        }}
+                      >
+                        <Trash2 size={15} />
+                        Delete draft
+                      </button>
+                    </div>
                   </td>
                 </tr>
               )) : (

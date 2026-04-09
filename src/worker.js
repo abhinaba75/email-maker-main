@@ -6,6 +6,7 @@ import {
   createDomain,
   createHtmlTemplate,
   createMailbox,
+  deleteThreadPermanently,
   deleteMailbox,
   deleteAliasRule,
   deleteDraft,
@@ -37,6 +38,7 @@ import {
   listThreads,
   listThreadsPage,
   listAliasRulesPage,
+  purgeTrashFolder,
   recordIngestFailure,
   saveConnection,
   saveDraft,
@@ -1262,8 +1264,40 @@ async function handleThreads(request, env, user, pathParts) {
     return json({ thread });
   }
 
+  if (request.method === 'POST' && pathParts.length === 3 && pathParts[2] === 'actions') {
+    const body = await readJson(request);
+    if (body.action !== 'empty_trash') {
+      return apiError(400, 'Unsupported bulk thread action');
+    }
+    const result = await purgeTrashFolder(env.DB, user.id);
+    await Promise.all(
+      (result.storageKeys || []).map((key) => env.MAIL_BUCKET.delete(key).catch(() => null)),
+    );
+    await publishRealtimeEvent(env, user.id, {
+      type: 'thread.updated',
+      folder: 'trash',
+      bulk: true,
+      action: 'empty_trash',
+    });
+    return json({ ok: true, ...result });
+  }
+
   if (request.method === 'POST' && pathParts.length === 4 && pathParts[3] === 'actions') {
     const body = await readJson(request);
+    if (body.action === 'delete') {
+      const result = await deleteThreadPermanently(env.DB, user.id, pathParts[2]);
+      if (!result) return apiError(404, 'Thread not found');
+      await Promise.all(
+        (result.storageKeys || []).map((key) => env.MAIL_BUCKET.delete(key).catch(() => null)),
+      );
+      await publishRealtimeEvent(env, user.id, {
+        type: 'thread.updated',
+        threadId: pathParts[2],
+        folder: 'trash',
+        deleted: true,
+      });
+      return json(result);
+    }
     const thread = await applyThreadAction(env.DB, user.id, pathParts[2], body.action);
     if (!thread) return apiError(404, 'Thread not found');
     await publishRealtimeEvent(env, user.id, {

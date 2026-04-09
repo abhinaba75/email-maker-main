@@ -48,6 +48,7 @@ export function AppShell({ controller, children }: AppShellProps) {
         <TopHeader
           view={controller.view}
           mailTitle={controller.view === 'mail' ? controller.folder.charAt(0).toUpperCase() + controller.folder.slice(1) : undefined}
+          isTrashView={controller.view === 'mail' && controller.folder === 'trash'}
           searchQuery={controller.searchQuery}
           onSearchChange={controller.setSearchQuery}
           onSearchSubmit={() => void controller.runSearch().catch(console.error)}
@@ -55,9 +56,23 @@ export function AppShell({ controller, children }: AppShellProps) {
           onReply={() => void controller.openReply().catch(console.error)}
           onForward={() => void controller.openForward().catch(console.error)}
           onArchive={() => void controller.archiveSelected().catch(console.error)}
-          onTrash={() => void controller.trashSelected().catch(console.error)}
+          onTrash={() => {
+            if (controller.view === 'mail' && controller.folder === 'trash') {
+              if (window.confirm('Permanently delete this thread? This cannot be undone.')) {
+                void controller.trashSelected().catch(console.error);
+              }
+              return;
+            }
+            void controller.trashSelected().catch(console.error);
+          }}
+          onEmptyTrash={() => {
+            if (window.confirm('Permanently delete every message in Trash? This cannot be undone.')) {
+              void controller.emptyTrash().catch(console.error);
+            }
+          }}
           onRefresh={() => void controller.refreshCurrentView().catch(console.error)}
           canActOnThread={Boolean(controller.selectedThread)}
+          canEmptyTrash={controller.view === 'mail' && controller.folder === 'trash' && controller.threads.length > 0}
           subtitle={headerSubtitle}
         />
 

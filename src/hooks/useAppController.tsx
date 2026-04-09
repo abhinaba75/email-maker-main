@@ -128,6 +128,7 @@ export function useAppController(): AppController {
   const realtimeSocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const realtimeSessionRef = useRef(0);
 
   async function getFreshToken(forceRefresh = false): Promise<string> {
     const currentUser = authRef.current?.currentUser;
@@ -201,6 +202,7 @@ export function useAppController(): AppController {
   }
 
   function disconnectRealtime() {
+    realtimeSessionRef.current += 1;
     if (reconnectTimerRef.current) {
       window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -337,6 +339,7 @@ export function useAppController(): AppController {
   async function connectRealtime() {
     if (!tokenRef.current && !authRef.current?.currentUser) return;
     disconnectRealtime();
+    const sessionId = realtimeSessionRef.current;
     const token = await getFreshToken();
     if (!token) return;
     setRealtimeStatus('connecting');
@@ -344,6 +347,7 @@ export function useAppController(): AppController {
     const socket = new WebSocket(`${protocol}//${window.location.host}/api/realtime?token=${encodeURIComponent(token)}`);
     realtimeSocketRef.current = socket;
     socket.addEventListener('open', () => {
+      if (sessionId !== realtimeSessionRef.current) return;
       reconnectAttemptsRef.current = 0;
       setRealtimeStatus('connected');
       setStatus('Workspace ready.');
@@ -357,6 +361,7 @@ export function useAppController(): AppController {
       }
     });
     socket.addEventListener('close', () => {
+      if (sessionId !== realtimeSessionRef.current) return;
       realtimeSocketRef.current = null;
       reconnectAttemptsRef.current += 1;
       const delay = Math.min(10000, reconnectAttemptsRef.current * 1500);
@@ -366,6 +371,7 @@ export function useAppController(): AppController {
       }, delay);
     });
     socket.addEventListener('error', () => {
+      if (sessionId !== realtimeSessionRef.current) return;
       socket.close();
     });
   }
@@ -503,13 +509,26 @@ export function useAppController(): AppController {
     };
   }
 
-  async function handleThreadAction(action: 'archive' | 'trash') {
+  async function handleThreadAction(action: 'archive' | 'trash' | 'delete') {
     if (!selectedThread) throw new Error('Select a thread first.');
+    setStatus(action === 'delete' ? 'Deleting thread...' : 'Updating thread...');
     await api(`/api/threads/${selectedThread.id}/actions`, {
       method: 'POST',
       body: JSON.stringify({ action }),
     });
-    await loadThreadsAction();
+    setSelectedThread(null);
+    await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: false });
+  }
+
+  async function emptyTrash() {
+    setStatus('Emptying trash...');
+    await api('/api/threads/actions', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'empty_trash' }),
+    });
+    setSelectedThread(null);
+    await loadThreadsAction('trash', mailboxId, searchQuery, { preserveSelection: false });
+    setStatus('Trash emptied.');
   }
 
   async function saveConnection(provider: 'cloudflare' | 'resend' | 'gemini' | 'groq', input: Record<string, unknown>) {
@@ -607,6 +626,19 @@ export function useAppController(): AppController {
     await api('/api/forward-destinations', { method: 'POST', body: JSON.stringify(input) });
     await loadForwardDestinations();
     setStatus('Forward destination saved.');
+  }
+
+  async function deleteDraft(draftId: string) {
+    setStatus('Deleting draft...');
+    await api(`/api/drafts/${draftId}`, { method: 'DELETE' });
+    setData((current) => ({
+      ...current,
+      drafts: current.drafts.filter((draft) => draft.id !== draftId),
+    }));
+    if (composeSeed?.id === draftId) {
+      setComposeSeed(null);
+    }
+    setStatus('Draft deleted.');
   }
 
   async function saveComposeDraft(draft: ComposeDraft, quiet = false): Promise<DraftRecord | null> {
@@ -842,7 +874,15 @@ export function useAppController(): AppController {
     },
     trashSelected: async () => {
       try {
-        await handleThreadAction('trash');
+        await handleThreadAction(folder === 'trash' ? 'delete' : 'trash');
+      } catch (error) {
+        showError(error);
+        throw error;
+      }
+    },
+    emptyTrash: async () => {
+      try {
+        await emptyTrash();
       } catch (error) {
         showError(error);
         throw error;
@@ -861,6 +901,7 @@ export function useAppController(): AppController {
     saveAliasRule,
     deleteAliasRule,
     saveForwardDestination,
+    deleteDraft,
     sendCompose,
     saveComposeDraft,
     uploadComposeAttachments,
