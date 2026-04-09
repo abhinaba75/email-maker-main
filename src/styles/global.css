@@ -281,7 +281,7 @@ textarea:focus {
 .app-shell {
   height: 100dvh;
   display: grid;
-  grid-template-columns: 228px minmax(0, 1fr);
+  grid-template-columns: 270px minmax(0, 1fr);
   gap: 12px;
   padding: 12px;
   overflow: hidden;
@@ -618,10 +618,9 @@ textarea:focus {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: clamp(360px, 28vw, 430px) minmax(620px, 920px);
+  grid-template-columns: clamp(340px, 26vw, 400px) minmax(0, 1fr);
   gap: 12px;
   overflow: hidden;
-  justify-content: center;
 }
 
 .mail-stage > * {
@@ -1336,11 +1335,11 @@ code {
 
 @media (max-width: 1280px) {
   .app-shell {
-    grid-template-columns: 216px minmax(0, 1fr);
+    grid-template-columns: 250px minmax(0, 1fr);
   }
 
   .mail-stage {
-    grid-template-columns: clamp(320px, 30vw, 390px) minmax(520px, 760px);
+    grid-template-columns: clamp(280px, 28vw, 360px) minmax(0, 1fr);
   }
 
   .top-header {
@@ -1370,7 +1369,7 @@ code {
   .app-shell {
     padding: 10px;
     gap: 10px;
-    grid-template-columns: 208px minmax(0, 1fr);
+    grid-template-columns: 240px minmax(0, 1fr);
   }
 
   .sidebar {
@@ -1386,7 +1385,7 @@ code {
   }
 
   .mail-stage {
-    grid-template-columns: clamp(280px, 32vw, 340px) minmax(420px, 620px);
+    grid-template-columns: clamp(260px, 28vw, 320px) minmax(0, 1fr);
     gap: 10px;
   }
 
