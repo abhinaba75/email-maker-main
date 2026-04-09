@@ -12,7 +12,6 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
-import { motion } from 'framer-motion';
 import { SIDEBAR_GROUPS } from '../lib/constants';
 import { getDomain } from '../lib/format';
 import type { DomainRecord, MailboxRecord, UserSummary, ViewId, FolderId } from '../types';
@@ -74,13 +73,11 @@ export function SidebarNav({
                 const isActive = item.id === activeView || item.id === `mail:${activeFolder}`;
                 const badge = item.id === `mail:${activeFolder}` ? threadCount : null;
                 return (
-                  <motion.button
+                  <button
                     key={item.id}
                     type="button"
                     className={`nav-item ${isActive ? 'active' : ''}`}
                     onClick={() => onNavigate(item.id)}
-                    whileHover={{ x: 4 }}
-                    whileTap={{ scale: 0.985 }}
                   >
                     <span className="nav-icon">
                       <Icon size={18} strokeWidth={1.8} />
@@ -90,7 +87,7 @@ export function SidebarNav({
                       <span className="nav-meta">{item.meta}</span>
                     </span>
                     {badge ? <span className="nav-badge">{badge}</span> : null}
-                  </motion.button>
+                  </button>
                 );
               })}
             </div>

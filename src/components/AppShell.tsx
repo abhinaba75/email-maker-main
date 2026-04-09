@@ -1,4 +1,3 @@
-import { AnimatePresence, motion } from 'framer-motion';
 import type { ReactNode } from 'react';
 import { buildAlertSummary, getSendingSummaryMessage } from '../lib/format';
 import type { AppController } from '../types';
@@ -13,14 +12,22 @@ interface AppShellProps {
 
 export function AppShell({ controller, children }: AppShellProps) {
   const alertSummary = buildAlertSummary(controller.alertCounts);
+  const viewSubtitles: Record<typeof controller.view, string> = {
+    mail: getSendingSummaryMessage(
+      controller.data.domains,
+      controller.sendingDomainId,
+      controller.selectedSendingDomainId,
+      controller.sendingStatusMessage,
+    ),
+    connections: 'Manage Cloudflare, Resend, Gemini, and Llama connections for the workspace.',
+    domains: 'Provision domains, set the sending domain, manage inboxes, and save reusable templates.',
+    aliases: 'Control explicit aliases, catch-all rules, mailbox targets, and forwarding behavior.',
+    destinations: 'Verify forwarding destinations for alias and catch-all delivery.',
+    drafts: 'Open, continue, and send saved drafts without losing editor state.',
+  };
   const headerSubtitle = controller.view === 'mail'
-    ? getSendingSummaryMessage(
-        controller.data.domains,
-        controller.sendingDomainId,
-        controller.selectedSendingDomainId,
-        controller.sendingStatusMessage,
-      )
-    : alertSummary || controller.status;
+    ? viewSubtitles.mail
+    : viewSubtitles[controller.view];
 
   return (
     <div className="app-shell">
@@ -54,19 +61,12 @@ export function AppShell({ controller, children }: AppShellProps) {
         />
 
         <main className="app-content">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={controller.view}
-              className="app-view"
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.2, ease: 'easeOut' }}
-            >
+          <div className="app-view">
+            <div className={`alert-banner-slot ${alertSummary ? 'has-alert' : ''}`}>
               {alertSummary ? <div className="alert-banner">{alertSummary}</div> : null}
-              {children}
-            </motion.div>
-          </AnimatePresence>
+            </div>
+            {children}
+          </div>
         </main>
 
         <StatusFooter

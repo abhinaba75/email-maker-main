@@ -12,9 +12,9 @@ export function StatusFooter({ status, userEmail, currentView, realtimeStatus }:
   return (
     <footer className="status-footer">
       <div className="status-pill-group">
-        <div className="status-pill">{status}</div>
-        {userEmail ? <div className="status-pill subtle">{userEmail}</div> : null}
-        <div className="status-pill subtle">{currentView}</div>
+        <div className="status-pill status-primary" title={status}>{status}</div>
+        {userEmail ? <div className="status-pill subtle status-secondary" title={userEmail}>{userEmail}</div> : null}
+        <div className="status-pill subtle status-tertiary">{currentView}</div>
         <div className={`status-pill ${connected ? 'good' : 'warning'}`}>
           {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
           {connected ? 'Realtime connected' : realtimeStatus === 'reconnecting' ? 'Realtime reconnecting' : 'Realtime idle'}

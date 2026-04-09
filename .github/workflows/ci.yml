@@ -25,10 +25,15 @@ jobs:
 
       - name: Syntax check
         run: |
-          node --check public/app.js
           node --check src/worker.js
           node --check src/lib/db.js
           node --check src/lib/auth.js
+
+      - name: Type check frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
 
       - name: Run tests
         run: npm test

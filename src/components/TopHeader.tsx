@@ -1,4 +1,3 @@
-import { AnimatePresence, motion } from 'framer-motion';
 import { Archive, Forward, Plus, RefreshCcw, Reply, Search, Trash2 } from 'lucide-react';
 import type { ViewId } from '../types';
 
@@ -45,19 +44,7 @@ export function TopHeader({
       <div className="top-header-copy">
         <div className="eyebrow">Email workspace</div>
         <h1>{TITLES[view]}</h1>
-        <AnimatePresence mode="wait">
-          {subtitle ? (
-            <motion.p
-              key={subtitle}
-              className="header-subtitle"
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-            >
-              {subtitle}
-            </motion.p>
-          ) : null}
-        </AnimatePresence>
+        <p className="header-subtitle">{subtitle || '\u00a0'}</p>
       </div>
 
       <div className="top-header-actions">

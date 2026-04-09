@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion';
 import { formatDateTime } from '../lib/format';
 import type { ThreadSummary } from '../types';
 
@@ -32,14 +31,11 @@ export function ThreadList({
       <div className="thread-list">
         {threads.length ? (
           threads.map((thread, index) => (
-            <motion.button
+            <button
               key={thread.id}
               type="button"
               className={`thread-card ${selectedThreadId === thread.id ? 'active' : ''}`}
               onClick={() => onSelect(thread.id)}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: Math.min(index * 0.03, 0.24) }}
             >
               <div className="thread-card-head">
                 <span className="thread-sender">{thread.mailbox_email || thread.hostname || 'Mailbox'}</span>
@@ -47,7 +43,7 @@ export function ThreadList({
               </div>
               <div className="thread-card-subject">{thread.subject || '(no subject)'}</div>
               <div className="thread-card-snippet">{thread.snippet || 'No preview available yet.'}</div>
-            </motion.button>
+            </button>
           ))
         ) : (
           <div className="empty-card">{emptyMessage}</div>
