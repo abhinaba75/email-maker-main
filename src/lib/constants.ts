@@ -1,4 +1,3 @@
-export const WORKER_ORIGIN = 'https://alias-forge-2000.abhinaba.workers.dev';
 export const BOOT_REQUEST_TIMEOUT_MS = 10000;
 export const API_REQUEST_TIMEOUT_MS = 15000;
 

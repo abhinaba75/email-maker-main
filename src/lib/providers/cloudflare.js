@@ -33,6 +33,10 @@ export async function getEmailRouting(token, zoneId) {
   return cfRequest(token, `/zones/${zoneId}/email/routing`);
 }
 
+export async function getEmailRoutingDns(token, zoneId) {
+  return cfRequest(token, `/zones/${zoneId}/email/routing/dns`);
+}
+
 export async function enableEmailRouting(token, zoneId) {
   return cfRequest(token, `/zones/${zoneId}/email/routing/enable`, {
     method: 'POST',
@@ -43,6 +47,10 @@ export async function enableEmailRouting(token, zoneId) {
 export async function listRoutingRules(token, zoneId) {
   const result = await cfRequest(token, `/zones/${zoneId}/email/routing/rules?per_page=100`);
   return Array.isArray(result) ? result : result.result || [];
+}
+
+export async function getCatchAllRule(token, zoneId) {
+  return cfRequest(token, `/zones/${zoneId}/email/routing/rules/catch_all`);
 }
 
 export async function upsertRoutingRule(token, zoneId, ruleId, payload) {
@@ -83,4 +91,3 @@ export async function ensureDestinationAddress(token, accountId, email) {
     body: JSON.stringify({ email }),
   });
 }
-

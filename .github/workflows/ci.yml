@@ -38,5 +38,8 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Worker smoke tests
+        run: node --test tests/db.test.js tests/worker.test.js
+
       - name: Validate Worker bundle
         run: npx wrangler deploy --dry-run

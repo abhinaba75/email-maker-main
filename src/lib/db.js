@@ -365,6 +365,53 @@ export async function getAlertCounts(db, userId) {
   };
 }
 
+export async function getFolderCounts(db, userId) {
+  const [threadRows, draftRow] = await Promise.all([
+    all(
+      db.prepare(
+        `SELECT folder, COUNT(*) AS count
+         FROM threads
+         WHERE user_id = ?1
+         GROUP BY folder`,
+      ).bind(userId),
+    ),
+    first(
+      db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM drafts
+         WHERE user_id = ?1`,
+      ).bind(userId),
+    ),
+  ]);
+
+  return {
+    inbox: Number(threadRows.find((row) => row.folder === 'inbox')?.count || 0),
+    sent: Number(threadRows.find((row) => row.folder === 'sent')?.count || 0),
+    archive: Number(threadRows.find((row) => row.folder === 'archive')?.count || 0),
+    trash: Number(threadRows.find((row) => row.folder === 'trash')?.count || 0),
+    drafts: Number(draftRow?.count || 0),
+  };
+}
+
+export async function getMailboxUnreadCounts(db, userId) {
+  const rows = await all(
+    db.prepare(
+      `SELECT mailbox_id, SUM(unread_count) AS unread_count
+       FROM threads
+       WHERE user_id = ?1
+         AND folder = 'inbox'
+         AND mailbox_id IS NOT NULL
+       GROUP BY mailbox_id`,
+    ).bind(userId),
+  );
+
+  return Object.fromEntries(
+    rows
+      .filter((row) => row.mailbox_id)
+      .map((row) => [row.mailbox_id, Number(row.unread_count || 0)]),
+  );
+}
+
 export async function listMailboxes(db, userId, domainId = null) {
   const stmt = domainId
     ? db.prepare(
@@ -1110,6 +1157,49 @@ export async function resolveIngestFailuresForRawKey(db, rawKey) {
     )
     .bind(rawKey, Date.now())
     .run();
+}
+
+export async function getIngestFailure(db, userId, ingestFailureId) {
+  const row = await first(
+    db.prepare(
+      `SELECT *
+       FROM ingest_failures
+       WHERE user_id = ?1
+         AND id = ?2`,
+    ).bind(userId, ingestFailureId),
+  );
+  return mapRow('ingest_failures', row);
+}
+
+export async function listIngestFailuresPage(db, userId, options = {}) {
+  const limit = clampLimit(options.limit, 25, 100);
+  const cursor = decodeCursor(options.cursor);
+  const params = [userId];
+  const clauses = ['user_id = ?1'];
+  if (options.includeResolved !== true) {
+    clauses.push('resolved_at IS NULL');
+  }
+  if (cursor?.lastSeenAt && cursor?.id) {
+    clauses.push(`(last_seen_at < ?${params.length + 1} OR (last_seen_at = ?${params.length + 1} AND id < ?${params.length + 2}))`);
+    params.push(cursor.lastSeenAt, cursor.id);
+  }
+  const rows = await all(
+    db.prepare(
+      `SELECT *
+       FROM ingest_failures
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY last_seen_at DESC, id DESC
+       LIMIT ${limit + 1}`,
+    ).bind(...params),
+  );
+  const hasMore = rows.length > limit;
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map((row) => mapRow('ingest_failures', row));
+  const last = pageRows.at(-1);
+  return {
+    items,
+    nextCursor: hasMore && last ? encodeCursor({ lastSeenAt: last.last_seen_at, id: last.id }) : null,
+  };
 }
 
 export async function saveInboundMessage(db, {

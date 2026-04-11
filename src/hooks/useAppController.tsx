@@ -9,7 +9,7 @@ import {
   type Auth,
   type User,
 } from 'firebase/auth';
-import { AI_TONE_OPTIONS, BOOT_REQUEST_TIMEOUT_MS, FALLBACK_FIREBASE_CONFIG, GEMINI_MODEL_OPTIONS, WORKER_ORIGIN } from '../lib/constants';
+import { AI_TONE_OPTIONS, BOOT_REQUEST_TIMEOUT_MS, FALLBACK_FIREBASE_CONFIG, GEMINI_MODEL_OPTIONS } from '../lib/constants';
 import {
   buildAlertSummary,
   formatAddresses,
@@ -32,10 +32,14 @@ import type {
   BootPayload,
   ComposeDraft,
   ConnectionSummary,
+  CursorState,
   DomainRecord,
   DraftRecord,
   FolderId,
+  FolderCounts,
   HtmlTemplateRecord,
+  IngestFailureRecord,
+  MailboxUnreadCounts,
   MailboxRecord,
   RuntimeConfig,
   RuntimeFirebaseConfig,
@@ -57,6 +61,18 @@ const EMPTY_DATA: WorkspaceData = {
   forwardDestinations: [],
   aliases: [],
   drafts: [],
+  ingestFailures: [],
+};
+const EMPTY_FOLDER_COUNTS: FolderCounts = { inbox: 0, sent: 0, archive: 0, trash: 0, drafts: 0 };
+const EMPTY_MAILBOX_UNREAD_COUNTS: MailboxUnreadCounts = {};
+const EMPTY_CURSORS: CursorState = {
+  threads: null,
+  drafts: null,
+  aliases: null,
+  forwardDestinations: null,
+  htmlTemplates: null,
+  mailboxes: null,
+  ingestFailures: null,
 };
 
 function normalizeFirebaseConfig(config?: Partial<RuntimeFirebaseConfig> | null): RuntimeFirebaseConfig {
@@ -97,6 +113,12 @@ async function fetchRuntimeConfigFrom(url: string): Promise<RuntimeConfig> {
   };
 }
 
+function resolveApiUrl(path: string, runtime: RuntimeConfig | null): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const base = runtime?.apiBaseUrl || window.location.origin;
+  return new URL(path, base).toString();
+}
+
 function isDraftRecord(value: Partial<ComposeDraft> | DraftRecord): value is DraftRecord {
   return 'mailbox_id' in value || 'to_json' in value || 'html_body' in value;
 }
@@ -117,6 +139,9 @@ export function useAppController(): AppController {
   const [selectedThread, setSelectedThread] = useState<ThreadDetail | null>(null);
   const [composeSeed, setComposeSeed] = useState<ComposeDraft | null>(null);
   const [alertCounts, setAlertCounts] = useState<AlertCounts>(EMPTY_ALERTS);
+  const [folderCounts, setFolderCounts] = useState<FolderCounts>(EMPTY_FOLDER_COUNTS);
+  const [mailboxUnreadCounts, setMailboxUnreadCounts] = useState<MailboxUnreadCounts>(EMPTY_MAILBOX_UNREAD_COUNTS);
+  const [cursors, setCursors] = useState<CursorState>(EMPTY_CURSORS);
   const [selectedSendingDomainId, setSelectedSendingDomainId] = useState<string | null>(null);
   const [sendingDomainId, setSendingDomainId] = useState<string | null>(null);
   const [sendingStatusMessage, setSendingStatusMessage] = useState<string | null>(null);
@@ -124,6 +149,7 @@ export function useAppController(): AppController {
 
   const authRef = useRef<Auth | null>(null);
   const providerRef = useRef<GoogleAuthProvider | null>(null);
+  const runtimeRef = useRef<RuntimeConfig | null>(null);
   const tokenRef = useRef('');
   const realtimeSocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -145,7 +171,8 @@ export function useAppController(): AppController {
     const token = await getFreshToken();
     if (token) headers.set('Authorization', `Bearer ${token}`);
 
-    let response = await fetchWithTimeout(path, { ...options, headers });
+    const requestUrl = resolveApiUrl(path, runtimeRef.current);
+    let response = await fetchWithTimeout(requestUrl, { ...options, headers });
     if (response.status === 401 && authRef.current?.currentUser) {
       const retryHeaders = new Headers(options.headers || {});
       if (!(options.body instanceof FormData)) {
@@ -153,7 +180,7 @@ export function useAppController(): AppController {
       }
       const refreshedToken = await getFreshToken(true);
       if (refreshedToken) retryHeaders.set('Authorization', `Bearer ${refreshedToken}`);
-      response = await fetchWithTimeout(path, { ...options, headers: retryHeaders });
+      response = await fetchWithTimeout(requestUrl, { ...options, headers: retryHeaders });
     }
 
     if (!response.ok) {
@@ -174,7 +201,7 @@ export function useAppController(): AppController {
     const headers = new Headers(options.headers || {});
     const token = await getFreshToken();
     if (token) headers.set('Authorization', `Bearer ${token}`);
-    const response = await fetchWithTimeout(path, { ...options, headers });
+    const response = await fetchWithTimeout(resolveApiUrl(path, runtimeRef.current), { ...options, headers });
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
     }
@@ -192,13 +219,7 @@ export function useAppController(): AppController {
   }
 
   async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
-    try {
-      return await fetchRuntimeConfigFrom('/api/runtime-config');
-    } catch (primaryError) {
-      if (window.location.origin === WORKER_ORIGIN) throw primaryError;
-      const fallback = await fetchRuntimeConfigFrom(`${WORKER_ORIGIN}/api/runtime-config`);
-      return fallback;
-    }
+    return fetchRuntimeConfigFrom('/api/runtime-config');
   }
 
   function disconnectRealtime() {
@@ -223,34 +244,86 @@ export function useAppController(): AppController {
     }
   }
 
-  async function loadHtmlTemplates() {
-    const payload = await api<{ items?: HtmlTemplateRecord[]; templates?: HtmlTemplateRecord[] }>('/api/html-templates?limit=100');
-    setData((current) => ({ ...current, htmlTemplates: payload.items || payload.templates || [] }));
-  }
-
-  async function loadAliases() {
-    const payload = await api<{ items?: WorkspaceData['aliases']; aliases?: WorkspaceData['aliases'] }>('/api/aliases?limit=100');
-    setData((current) => ({ ...current, aliases: payload.items || payload.aliases || [] }));
-  }
-
-  async function loadForwardDestinations() {
-    const payload = await api<{ items?: WorkspaceData['forwardDestinations']; forwardDestinations?: WorkspaceData['forwardDestinations'] }>(
-      '/api/forward-destinations?limit=100',
+  async function loadHtmlTemplates(reset = true) {
+    const query = new URLSearchParams({ limit: '50' });
+    if (!reset && cursors.htmlTemplates) query.set('cursor', cursors.htmlTemplates);
+    const payload = await api<{ items?: HtmlTemplateRecord[]; templates?: HtmlTemplateRecord[]; nextCursor?: string | null }>(
+      `/api/html-templates?${query.toString()}`,
     );
+    const items = payload.items || payload.templates || [];
     setData((current) => ({
       ...current,
-      forwardDestinations: payload.items || payload.forwardDestinations || [],
+      htmlTemplates: reset ? items : [...current.htmlTemplates, ...items],
     }));
+    setCursors((current) => ({ ...current, htmlTemplates: payload.nextCursor || null }));
   }
 
-  async function loadDrafts() {
-    const payload = await api<{ items?: DraftRecord[]; drafts?: DraftRecord[] }>('/api/drafts?limit=100');
-    setData((current) => ({ ...current, drafts: payload.items || payload.drafts || [] }));
+  async function loadAliases(reset = true) {
+    const query = new URLSearchParams({ limit: '50' });
+    if (!reset && cursors.aliases) query.set('cursor', cursors.aliases);
+    const payload = await api<{ items?: WorkspaceData['aliases']; aliases?: WorkspaceData['aliases']; nextCursor?: string | null }>(
+      `/api/aliases?${query.toString()}`,
+    );
+    const items = payload.items || payload.aliases || [];
+    setData((current) => ({
+      ...current,
+      aliases: reset ? items : [...current.aliases, ...items],
+    }));
+    setCursors((current) => ({ ...current, aliases: payload.nextCursor || null }));
+  }
+
+  async function loadForwardDestinations(reset = true) {
+    const query = new URLSearchParams({ limit: '50' });
+    if (!reset && cursors.forwardDestinations) query.set('cursor', cursors.forwardDestinations);
+    const payload = await api<{
+      items?: WorkspaceData['forwardDestinations'];
+      forwardDestinations?: WorkspaceData['forwardDestinations'];
+      nextCursor?: string | null;
+    }>(`/api/forward-destinations?${query.toString()}`);
+    const items = payload.items || payload.forwardDestinations || [];
+    setData((current) => ({
+      ...current,
+      forwardDestinations: reset ? items : [...current.forwardDestinations, ...items],
+    }));
+    setCursors((current) => ({ ...current, forwardDestinations: payload.nextCursor || null }));
+  }
+
+  async function loadDrafts(reset = true) {
+    const query = new URLSearchParams({ limit: '50' });
+    if (!reset && cursors.drafts) query.set('cursor', cursors.drafts);
+    const payload = await api<{ items?: DraftRecord[]; drafts?: DraftRecord[]; nextCursor?: string | null }>(
+      `/api/drafts?${query.toString()}`,
+    );
+    const items = payload.items || payload.drafts || [];
+    setData((current) => ({ ...current, drafts: reset ? items : [...current.drafts, ...items] }));
+    setCursors((current) => ({ ...current, drafts: payload.nextCursor || null }));
+  }
+
+  async function loadMailboxes(reset = true) {
+    const query = new URLSearchParams({ limit: '50' });
+    if (!reset && cursors.mailboxes) query.set('cursor', cursors.mailboxes);
+    const payload = await api<{ items?: MailboxRecord[]; mailboxes?: MailboxRecord[]; nextCursor?: string | null }>(
+      `/api/mailboxes?${query.toString()}`,
+    );
+    const items = payload.items || payload.mailboxes || [];
+    setData((current) => ({ ...current, mailboxes: reset ? items : [...current.mailboxes, ...items] }));
+    setCursors((current) => ({ ...current, mailboxes: payload.nextCursor || null }));
+  }
+
+  async function loadIngestFailures(reset = true) {
+    const query = new URLSearchParams({ limit: '25' });
+    if (!reset && cursors.ingestFailures) query.set('cursor', cursors.ingestFailures);
+    const payload = await api<{ items?: IngestFailureRecord[]; ingestFailures?: IngestFailureRecord[]; nextCursor?: string | null }>(
+      `/api/ingest-failures?${query.toString()}`,
+    );
+    const items = payload.items || payload.ingestFailures || [];
+    setData((current) => ({ ...current, ingestFailures: reset ? items : [...current.ingestFailures, ...items] }));
+    setCursors((current) => ({ ...current, ingestFailures: payload.nextCursor || null }));
   }
 
   async function ensureViewData(targetView: ViewId = view) {
     if (targetView === 'domains') {
-      await loadHtmlTemplates();
+      await Promise.all([loadHtmlTemplates(), loadIngestFailures()]);
     } else if (targetView === 'aliases') {
       await Promise.all([loadAliases(), loadForwardDestinations()]);
     } else if (targetView === 'destinations') {
@@ -270,28 +343,34 @@ export function useAppController(): AppController {
     targetFolder = folder,
     targetMailboxId = mailboxId,
     targetSearch = searchQuery,
-    options: { preserveSelection?: boolean } = {},
+    options: { preserveSelection?: boolean; append?: boolean } = {},
   ) {
     if (!tokenRef.current && !authRef.current?.currentUser) return;
     setStatus(`Loading ${targetFolder}...`);
-    const query = new URLSearchParams({ folder: targetFolder });
+    const query = new URLSearchParams({ folder: targetFolder, limit: '50' });
     if (targetMailboxId) query.set('mailboxId', targetMailboxId);
     if (targetSearch.trim()) query.set('query', targetSearch.trim());
-    const payload = await api<{ items?: ThreadSummary[]; threads?: ThreadSummary[] }>(`/api/threads?${query.toString()}`);
+    if (options.append && cursors.threads) query.set('cursor', cursors.threads);
+    const payload = await api<{ items?: ThreadSummary[]; threads?: ThreadSummary[]; nextCursor?: string | null }>(
+      `/api/threads?${query.toString()}`,
+    );
     const nextThreads = payload.items || payload.threads || [];
-    setThreads(nextThreads);
+    setThreads((current) => (options.append ? [...current, ...nextThreads] : nextThreads));
+    setCursors((current) => ({ ...current, threads: payload.nextCursor || null }));
     const preservedSelection = options.preserveSelection && selectedThread?.id
-      ? nextThreads.find((thread) => thread.id === selectedThread.id)
+      ? (options.append ? [...threads, ...nextThreads] : nextThreads).find((thread) => thread.id === selectedThread.id)
       : null;
     if (preservedSelection) {
       await selectThreadAction(preservedSelection.id);
     } else {
-      setSelectedThread(null);
-      setStatus(`Ready. ${nextThreads.length} thread(s) in ${targetFolder}.`);
+      if (!options.append) {
+        setSelectedThread(null);
+      }
+      setStatus(options.append ? `Loaded more ${targetFolder} threads.` : `Ready. ${nextThreads.length} thread(s) in ${targetFolder}.`);
     }
   }
 
-  async function refreshBootstrap() {
+  async function refreshBootstrap(options: { skipThreads?: boolean } = {}) {
     setStatus('Loading workspace...');
     const payload = await api<BootPayload>('/api/bootstrap');
     setUser(payload.user ? {
@@ -302,6 +381,8 @@ export function useAppController(): AppController {
     setSendingDomainId(payload.sendingDomainId || null);
     setSendingStatusMessage(payload.sendingStatusMessage || null);
     setAlertCounts(payload.alertCounts || EMPTY_ALERTS);
+    setFolderCounts(payload.folderCounts || EMPTY_FOLDER_COUNTS);
+    setMailboxUnreadCounts(payload.mailboxUnreadCounts || EMPTY_MAILBOX_UNREAD_COUNTS);
     setData((current) => ({
       ...current,
       connections: payload.connections || [],
@@ -311,8 +392,9 @@ export function useAppController(): AppController {
       forwardDestinations: current.forwardDestinations,
       aliases: current.aliases,
       drafts: current.drafts,
+      ingestFailures: current.ingestFailures,
     }));
-    if (view === 'mail') {
+    if (view === 'mail' && !options.skipThreads) {
       await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: false });
     } else {
       await ensureViewData(view);
@@ -328,14 +410,21 @@ export function useAppController(): AppController {
         return;
       }
       await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: true });
+      await refreshBootstrap({ skipThreads: true });
       return;
     }
     if (event.type === 'draft.updated' && view === 'drafts') {
       await loadDrafts();
+      await refreshBootstrap({ skipThreads: true });
+      return;
+    }
+    if (event.type === 'ingest.retrying' && view === 'domains') {
+      await loadIngestFailures();
+      await refreshBootstrap({ skipThreads: true });
       return;
     }
     if (event.type === 'routing.degraded' || event.type === 'routing.updated' || event.type === 'ingest.failed') {
-      await refreshBootstrap();
+      await refreshBootstrap({ skipThreads: view === 'mail' });
     }
   }
 
@@ -346,8 +435,10 @@ export function useAppController(): AppController {
     const token = await getFreshToken();
     if (!token) return;
     setRealtimeStatus('connecting');
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${protocol}//${window.location.host}/api/realtime?token=${encodeURIComponent(token)}`);
+    const socketUrl = new URL(resolveApiUrl('/api/realtime', runtimeRef.current));
+    socketUrl.protocol = socketUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    socketUrl.searchParams.set('token', token);
+    const socket = new WebSocket(socketUrl.toString());
     realtimeSocketRef.current = socket;
     socket.addEventListener('open', () => {
       if (sessionId !== realtimeSessionRef.current) return;
@@ -428,10 +519,10 @@ export function useAppController(): AppController {
     } else if (view === 'drafts') {
       await loadDrafts();
     } else if (view === 'domains') {
-      await Promise.all([loadHtmlTemplates(), loadZones(), refreshBootstrap()]);
+      await Promise.all([loadHtmlTemplates(), loadZones(), loadIngestFailures(), refreshBootstrap({ skipThreads: true })]);
       return;
     } else {
-      await refreshBootstrap();
+      await refreshBootstrap({ skipThreads: true });
       return;
     }
     setStatus('Workspace ready.');
@@ -512,26 +603,39 @@ export function useAppController(): AppController {
     };
   }
 
-  async function handleThreadAction(action: 'archive' | 'trash' | 'delete' | 'restore') {
+  async function handleThreadAction(action: 'archive' | 'trash' | 'delete' | 'restore' | 'mark_read' | 'mark_unread' | 'star' | 'unstar') {
     if (!selectedThread) throw new Error('Select a thread first.');
     const statusByAction = {
       archive: 'Archiving thread...',
       trash: 'Moving thread to trash...',
       delete: 'Deleting thread...',
       restore: 'Recovering thread from trash...',
+      mark_read: 'Marking thread as read...',
+      mark_unread: 'Marking thread as unread...',
+      star: 'Starring thread...',
+      unstar: 'Removing star...',
     } as const;
     setStatus(statusByAction[action]);
     await api(`/api/threads/${selectedThread.id}/actions`, {
       method: 'POST',
       body: JSON.stringify({ action }),
     });
-    setSelectedThread(null);
-    await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: false });
+    if (['archive', 'trash', 'delete', 'restore'].includes(action)) {
+      setSelectedThread(null);
+      await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: false });
+    } else {
+      await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: true });
+    }
+    await refreshBootstrap({ skipThreads: true });
     const successByAction = {
       archive: 'Thread archived.',
       trash: 'Thread moved to trash.',
       delete: 'Thread permanently deleted.',
       restore: 'Thread recovered from trash.',
+      mark_read: 'Thread marked as read.',
+      mark_unread: 'Thread marked as unread.',
+      star: 'Thread starred.',
+      unstar: 'Thread unstarred.',
     } as const;
     setStatus(successByAction[action]);
   }
@@ -544,6 +648,7 @@ export function useAppController(): AppController {
     });
     setSelectedThread(null);
     await loadThreadsAction('trash', mailboxId, searchQuery, { preserveSelection: false });
+    await refreshBootstrap({ skipThreads: true });
     setStatus('Trash emptied.');
   }
 
@@ -647,13 +752,19 @@ export function useAppController(): AppController {
   async function deleteDraft(draftId: string) {
     setStatus('Deleting draft...');
     await api(`/api/drafts/${draftId}`, { method: 'DELETE' });
-    setData((current) => ({
-      ...current,
-      drafts: current.drafts.filter((draft) => draft.id !== draftId),
-    }));
+    let nextDraftCount = 0;
+    setData((current) => {
+      const nextDrafts = current.drafts.filter((draft) => draft.id !== draftId);
+      nextDraftCount = nextDrafts.length;
+      return {
+        ...current,
+        drafts: nextDrafts,
+      };
+    });
     if (composeSeed?.id === draftId) {
       setComposeSeed(null);
     }
+    setFolderCounts((current) => ({ ...current, drafts: nextDraftCount }));
     setStatus('Draft deleted.');
   }
 
@@ -668,7 +779,60 @@ export function useAppController(): AppController {
       drafts: [],
     }));
     setComposeSeed((current) => (current?.id ? null : current));
+    setFolderCounts((current) => ({ ...current, drafts: 0 }));
     setStatus('All drafts deleted.');
+  }
+
+  async function retryIngestFailure(ingestFailureId: string) {
+    setStatus('Retrying ingest failure...');
+    await api(`/api/ingest-failures/${ingestFailureId}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    await loadIngestFailures();
+    await refreshBootstrap({ skipThreads: true });
+    setStatus('Ingest retry queued.');
+  }
+
+  async function loadMoreThreads() {
+    if (!cursors.threads) return;
+    await loadThreadsAction(folder, mailboxId, searchQuery, { preserveSelection: true, append: true });
+  }
+
+  async function loadMoreDrafts() {
+    if (!cursors.drafts) return;
+    await loadDrafts(false);
+    setStatus('Loaded more drafts.');
+  }
+
+  async function loadMoreAliases() {
+    if (!cursors.aliases) return;
+    await loadAliases(false);
+    setStatus('Loaded more aliases.');
+  }
+
+  async function loadMoreForwardDestinations() {
+    if (!cursors.forwardDestinations) return;
+    await loadForwardDestinations(false);
+    setStatus('Loaded more destinations.');
+  }
+
+  async function loadMoreHtmlTemplates() {
+    if (!cursors.htmlTemplates) return;
+    await loadHtmlTemplates(false);
+    setStatus('Loaded more templates.');
+  }
+
+  async function loadMoreMailboxes() {
+    if (!cursors.mailboxes) return;
+    await loadMailboxes(false);
+    setStatus('Loaded more mailboxes.');
+  }
+
+  async function loadMoreIngestFailures() {
+    if (!cursors.ingestFailures) return;
+    await loadIngestFailures(false);
+    setStatus('Loaded more ingest failures.');
   }
 
   async function saveComposeDraft(draft: ComposeDraft, quiet = false): Promise<DraftRecord | null> {
@@ -681,10 +845,13 @@ export function useAppController(): AppController {
         body: JSON.stringify(draft),
       });
       if (!payload.draft) return null;
+      let nextDraftCount = 0;
       setData((current) => {
         const nextDrafts = [payload.draft as DraftRecord, ...current.drafts.filter((item) => item.id !== payload.draft?.id)];
+        nextDraftCount = nextDrafts.length;
         return { ...current, drafts: nextDrafts };
       });
+      setFolderCounts((counts) => ({ ...counts, drafts: nextDraftCount }));
       if (!quiet) {
         setStatus('Draft saved.');
       }
@@ -820,6 +987,7 @@ export function useAppController(): AppController {
         const runtimeConfig = await fetchRuntimeConfig();
         if (!active) return;
         setRuntime(runtimeConfig);
+        runtimeRef.current = runtimeConfig;
         setLoginMessage('Ready for Google sign-in.');
         const config = normalizeFirebaseConfig(runtimeConfig.firebase);
         if (!config.apiKey || !config.projectId) {
@@ -843,6 +1011,9 @@ export function useAppController(): AppController {
               setThreads([]);
               setSelectedThread(null);
               setComposeSeed(null);
+              setFolderCounts(EMPTY_FOLDER_COUNTS);
+              setMailboxUnreadCounts(EMPTY_MAILBOX_UNREAD_COUNTS);
+              setCursors(EMPTY_CURSORS);
               disconnectRealtime();
               setLoginMessage('Sign in to continue.');
               setBooting(false);
@@ -892,6 +1063,9 @@ export function useAppController(): AppController {
     selectedThread,
     composeSeed,
     alertCounts,
+    folderCounts,
+    mailboxUnreadCounts,
+    cursors,
     selectedSendingDomainId,
     sendingDomainId,
     sendingStatusMessage,
@@ -959,9 +1133,41 @@ export function useAppController(): AppController {
         throw error;
       }
     },
+    restoreArchivedSelected: async () => {
+      try {
+        await handleThreadAction('restore');
+      } catch (error) {
+        showError(error);
+        throw error;
+      }
+    },
     trashSelected: async () => {
       try {
         await handleThreadAction(folder === 'trash' ? 'delete' : 'trash');
+      } catch (error) {
+        showError(error);
+        throw error;
+      }
+    },
+    starSelected: async () => {
+      try {
+        await handleThreadAction(selectedThread?.starred ? 'unstar' : 'star');
+      } catch (error) {
+        showError(error);
+        throw error;
+      }
+    },
+    markReadSelected: async () => {
+      try {
+        await handleThreadAction('mark_read');
+      } catch (error) {
+        showError(error);
+        throw error;
+      }
+    },
+    markUnreadSelected: async () => {
+      try {
+        await handleThreadAction('mark_unread');
       } catch (error) {
         showError(error);
         throw error;
@@ -990,6 +1196,14 @@ export function useAppController(): AppController {
     saveForwardDestination,
     deleteDraft,
     deleteAllDrafts,
+    retryIngestFailure,
+    loadMoreThreads,
+    loadMoreDrafts,
+    loadMoreAliases,
+    loadMoreForwardDestinations,
+    loadMoreHtmlTemplates,
+    loadMoreMailboxes,
+    loadMoreIngestFailures,
     sendCompose,
     saveComposeDraft,
     uploadComposeAttachments,

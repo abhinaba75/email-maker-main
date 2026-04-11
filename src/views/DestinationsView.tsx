@@ -85,6 +85,17 @@ export function DestinationsView({ controller }: DestinationsViewProps) {
             </tbody>
           </table>
         </div>
+        {controller.cursors.forwardDestinations ? (
+          <div className="table-load-more">
+            <button
+              type="button"
+              className="toolbar-button"
+              onClick={() => void controller.loadMoreForwardDestinations().catch(console.error)}
+            >
+              Load more destinations
+            </button>
+          </div>
+        ) : null}
       </section>
     </div>
   );

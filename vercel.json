@@ -1,9 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "routes": [
+  "redirects": [
     {
-      "src": "/(.*)",
-      "dest": "https://alias-forge-2000.abhinaba.workers.dev/$1"
+      "source": "/(.*)",
+      "destination": "https://email.itsabhinaba.in/$1",
+      "permanent": true
     }
   ]
 }

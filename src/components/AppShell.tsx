@@ -38,7 +38,8 @@ export function AppShell({ controller, children }: AppShellProps) {
         activeView={controller.view}
         activeFolder={controller.folder}
         activeMailboxId={controller.mailboxId}
-        threadCount={controller.threads.length}
+        folderCounts={controller.folderCounts}
+        mailboxUnreadCounts={controller.mailboxUnreadCounts}
         onNavigate={(target) => void controller.switchView(target).catch(console.error)}
         onMailboxOpen={(mailboxId) => void controller.openMailboxInbox(mailboxId).catch(console.error)}
         onSignOut={() => void controller.signOut().catch(console.error)}
@@ -56,6 +57,7 @@ export function AppShell({ controller, children }: AppShellProps) {
           onReply={() => void controller.openReply().catch(console.error)}
           onForward={() => void controller.openForward().catch(console.error)}
           onArchive={() => void controller.archiveSelected().catch(console.error)}
+          onRestore={() => void controller.restoreSelected().catch(console.error)}
           onTrash={() => {
             if (controller.view === 'mail' && controller.folder === 'trash') {
               if (window.confirm('Permanently delete this thread? This cannot be undone.')) {
@@ -70,9 +72,15 @@ export function AppShell({ controller, children }: AppShellProps) {
               void controller.emptyTrash().catch(console.error);
             }
           }}
+          onStar={() => void controller.starSelected().catch(console.error)}
+          onMarkRead={() => void controller.markReadSelected().catch(console.error)}
+          onMarkUnread={() => void controller.markUnreadSelected().catch(console.error)}
           onRefresh={() => void controller.refreshCurrentView().catch(console.error)}
           canActOnThread={Boolean(controller.selectedThread)}
           canEmptyTrash={controller.view === 'mail' && controller.folder === 'trash' && controller.threads.length > 0}
+          canRestore={controller.view === 'mail' && (controller.folder === 'trash' || controller.folder === 'archive')}
+          isThreadStarred={Boolean(controller.selectedThread?.starred)}
+          isThreadUnread={Boolean(controller.selectedThread?.unread_count)}
           subtitle={headerSubtitle}
         />
 

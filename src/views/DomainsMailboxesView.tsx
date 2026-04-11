@@ -136,11 +136,20 @@ export function DomainsMailboxesView({ controller }: DomainsMailboxesViewProps) 
                   <tr key={domain.id}>
                     <td>{domain.hostname}</td>
                     <td>
-                      {domain.routing_status}
+                      <div>{domain.routing_status}</div>
+                      <div className="table-meta">MX: {domain.mxStatus || 'unknown'} · Rules: {domain.routingRuleStatus || 'unknown'}</div>
+                      {domain.catchAllPreview ? <div className="table-meta">{domain.catchAllPreview}</div> : null}
                       {domain.routing_error ? <div className="table-meta">{domain.routing_error}</div> : null}
                     </td>
                     <td>{formatSendCapability(domain.sendCapability || domain.send_capability)}</td>
-                    <td>{domain.resend_status || 'not_configured'}</td>
+                    <td>
+                      <div>{domain.resend_status || 'not_configured'}</div>
+                      {domain.resendDnsRecords?.length ? (
+                        <div className="table-meta">
+                          {domain.resendDnsRecords.slice(0, 2).map((record) => `${record.type} ${record.name || record.record}`).join(' · ')}
+                        </div>
+                      ) : null}
+                    </td>
                     <td>{domainMailboxes.map((mailbox) => mailbox.email_address).join(', ') || 'No mailboxes'}</td>
                     <td>
                       <div className="table-actions">
@@ -175,6 +184,25 @@ export function DomainsMailboxesView({ controller }: DomainsMailboxesViewProps) 
             controller.sendingStatusMessage,
           )}
         </div>
+        {controller.data.domains.some((domain) => domain.dnsIssues?.length || domain.resendDnsRecords?.length) ? (
+          <div className="diagnostic-stack">
+            {controller.data.domains.map((domain) => (
+              <div key={`${domain.id}-diagnostics`} className="diagnostic-card">
+                <strong>{domain.hostname}</strong>
+                {domain.dnsIssues?.length ? (
+                  <div className="table-meta">
+                    Cloudflare DNS issues: {domain.dnsIssues.map((issue) => `${issue.type} ${issue.name}`).join(', ')}
+                  </div>
+                ) : null}
+                {domain.resendDnsRecords?.length ? (
+                  <div className="table-meta">
+                    Resend DNS: {domain.resendDnsRecords.map((record) => `${record.type} ${record.name || record.record} (${record.status || 'pending'})`).join(' · ')}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
       </section>
 
       <section className="surface-card">
@@ -225,6 +253,13 @@ export function DomainsMailboxesView({ controller }: DomainsMailboxesViewProps) 
             </tbody>
           </table>
         </div>
+        {controller.cursors.mailboxes ? (
+          <div className="table-load-more">
+            <button type="button" className="toolbar-button" onClick={() => void controller.loadMoreMailboxes().catch(console.error)}>
+              Load more mailboxes
+            </button>
+          </div>
+        ) : null}
       </section>
 
       <section className="surface-card">
@@ -343,6 +378,63 @@ export function DomainsMailboxesView({ controller }: DomainsMailboxesViewProps) 
             </tbody>
           </table>
         </div>
+        {controller.cursors.htmlTemplates ? (
+          <div className="table-load-more">
+            <button type="button" className="toolbar-button" onClick={() => void controller.loadMoreHtmlTemplates().catch(console.error)}>
+              Load more templates
+            </button>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="surface-card">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Delivery failures</div>
+            <h3>Ingest retry queue</h3>
+          </div>
+        </div>
+        <div className="data-table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Recipient</th>
+                <th>Reason</th>
+                <th>Retries</th>
+                <th>Last seen</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {controller.data.ingestFailures.length ? controller.data.ingestFailures.map((failure) => (
+                <tr key={failure.id}>
+                  <td>{failure.recipient}</td>
+                  <td>{failure.reason}</td>
+                  <td>{failure.retry_count || 0}</td>
+                  <td>{formatDateTime(failure.last_seen_at)}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="toolbar-button"
+                      onClick={() => void controller.retryIngestFailure(failure.id).catch(console.error)}
+                    >
+                      Retry
+                    </button>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan={5}>No ingest failures are waiting for retry.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {controller.cursors.ingestFailures ? (
+          <div className="table-load-more">
+            <button type="button" className="toolbar-button" onClick={() => void controller.loadMoreIngestFailures().catch(console.error)}>
+              Load more failures
+            </button>
+          </div>
+        ) : null}
       </section>
 
       <section className="surface-card">

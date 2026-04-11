@@ -72,6 +72,13 @@ export function DraftsView({ controller }: DraftsViewProps) {
             </tbody>
           </table>
         </div>
+        {controller.cursors.drafts ? (
+          <div className="table-load-more">
+            <button type="button" className="toolbar-button" onClick={() => void controller.loadMoreDrafts().catch(console.error)}>
+              Load more drafts
+            </button>
+          </div>
+        ) : null}
       </section>
     </div>
   );

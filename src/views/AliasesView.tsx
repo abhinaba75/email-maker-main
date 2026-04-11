@@ -129,6 +129,13 @@ export function AliasesView({ controller }: AliasesViewProps) {
             </tbody>
           </table>
         </div>
+        {controller.cursors.aliases ? (
+          <div className="table-load-more">
+            <button type="button" className="toolbar-button" onClick={() => void controller.loadMoreAliases().catch(console.error)}>
+              Load more aliases
+            </button>
+          </div>
+        ) : null}
       </section>
     </div>
   );

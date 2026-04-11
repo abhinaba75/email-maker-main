@@ -20,7 +20,10 @@ import {
   getConnection,
   getDomain,
   getDraft,
+  getFolderCounts,
   getHtmlTemplate,
+  getIngestFailure,
+  getMailboxUnreadCounts,
   getMailbox,
   getMailboxDependencySummary,
   getThread,
@@ -33,6 +36,7 @@ import {
   listForwardDestinations,
   listForwardDestinationsPage,
   listHtmlTemplatesPage,
+  listIngestFailuresPage,
   listMailboxes,
   listMailboxesPage,
   listThreads,
@@ -68,6 +72,8 @@ import {
   enableEmailRouting,
   ensureDestinationAddress,
   getEmailRouting,
+  getEmailRoutingDns,
+  getCatchAllRule,
   listDestinationAddresses,
   listRoutingRules,
   listZones,
@@ -76,6 +82,7 @@ import {
   verifyCloudflareToken,
 } from './lib/providers/cloudflare.js';
 import {
+  getResendDomain,
   listResendDomains,
   sendResendEmail,
   verifyResendApiKey,
@@ -113,10 +120,18 @@ const DEFAULT_ALLOWED_ORIGINS = new Set([
 const PUBLIC_ATTACHMENT_TTL_SECONDS = 300;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES = 35 * 1024 * 1024;
+const MAX_SCHEDULED_INGEST_RETRIES = 20;
 
-function buildRuntimeConfig(env) {
+function resolveApiBaseUrl(request, env) {
+  return getForwardedOrigin(request)
+    || String(env.PUBLIC_APP_ORIGIN || '').trim()
+    || new URL(request.url).origin;
+}
+
+function buildRuntimeConfig(request, env) {
   return {
     appName: env.APP_NAME || 'Email By Abhinaba Das',
+    apiBaseUrl: resolveApiBaseUrl(request, env),
     firebase: {
       apiKey: env.PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || '',
       authDomain: env.PUBLIC_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || '',
@@ -181,6 +196,36 @@ function withCors(request, env, response) {
   });
 }
 
+function withSecurityHeaders(request, env, response) {
+  const headers = new Headers(response.headers);
+  const contentType = headers.get('Content-Type') || '';
+  if (contentType.includes('text/html')) {
+    headers.set(
+      'Content-Security-Policy',
+      [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "img-src 'self' data: blob: https:",
+        "style-src 'self' 'unsafe-inline'",
+        "font-src 'self' data: https:",
+        "script-src 'self' https://www.gstatic.com",
+        "connect-src 'self' https: wss:",
+        "frame-src https://accounts.google.com",
+        "form-action 'self' https://accounts.google.com",
+      ].join('; '),
+    );
+    headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    headers.set('X-Content-Type-Options', 'nosniff');
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function createPreflightResponse(request, env) {
   const corsHeaders = createCorsHeaders(request, env);
   if (corsHeaders === false) {
@@ -235,13 +280,27 @@ async function verifyAttachmentSignature(env, payload, signature) {
   return timingSafeEqualString(expected, signature);
 }
 
-async function buildAttachmentUrl(request, env, attachment) {
+async function buildAttachmentUrl(request, env, user, attachment) {
   const expiresAt = Math.floor(Date.now() / 1000) + PUBLIC_ATTACHMENT_TTL_SECONDS;
-  const payload = `${attachment.r2Key}:${expiresAt}`;
+  const attachmentId = attachment.id || '';
+  const payload = `${user.id}:${attachmentId}:${attachment.r2Key}:${expiresAt}`;
   const sig = await signAttachmentToken(env, payload);
   const url = new URL('/api/public/attachments', request.url);
   url.searchParams.set('key', encodeBase64Url(attachment.r2Key));
   url.searchParams.set('exp', String(expiresAt));
+  url.searchParams.set('uid', encodeBase64Url(user.id));
+  url.searchParams.set('aid', encodeBase64Url(attachmentId));
+  url.searchParams.set('sig', sig);
+  return url.toString();
+}
+
+async function buildInlineImageUrl(request, env, attachment) {
+  const attachmentId = attachment.id || '';
+  const payload = `inline:${attachmentId}:${attachment.r2Key}`;
+  const sig = await signAttachmentToken(env, payload);
+  const url = new URL('/api/public/inline-image', request.url);
+  url.searchParams.set('key', encodeBase64Url(attachment.r2Key));
+  url.searchParams.set('aid', encodeBase64Url(attachmentId));
   url.searchParams.set('sig', sig);
   return url.toString();
 }
@@ -252,6 +311,152 @@ async function markDomainRoutingHealth(db, userId, domainId, { ok, message = nul
     routingError: ok ? null : String(message || 'Routing synchronization failed'),
     routingCheckedAt: Date.now(),
   });
+}
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function flattenRecordArrays(input) {
+  if (!input || typeof input !== 'object') return [];
+  return Object.values(input)
+    .flatMap((value) => (Array.isArray(value) ? value : []))
+    .filter((value) => value && typeof value === 'object');
+}
+
+function summarizeEmailRoutingDns(dnsResult) {
+  const records = flattenRecordArrays(dnsResult);
+  const missingRecords = records.filter((record) => {
+    const status = String(record.status || '').toLowerCase();
+    const required = record.required !== false;
+    const valid = record.validated ?? record.valid;
+    return required && (status === 'missing' || status === 'misconfigured' || valid === false);
+  });
+  const mxIssues = missingRecords.filter((record) => String(record.type || '').toUpperCase() === 'MX');
+  return {
+    records,
+    missingRecords,
+    mxStatus: mxIssues.length ? 'missing' : 'ready',
+  };
+}
+
+function summarizeResendDnsRecords(domainDetails) {
+  const records = toArray(domainDetails?.records).map((record) => ({
+    record: record.record || record.name || '',
+    name: record.name || record.record || '',
+    type: record.type || '',
+    value: record.value || '',
+    status: record.status || '',
+    ttl: record.ttl ?? null,
+    priority: record.priority ?? null,
+  }));
+  return {
+    records,
+    status: String(domainDetails?.status || 'not_started'),
+  };
+}
+
+async function collectDomainDiagnostics(db, env, userId, domain, aliasRules, cfConnection, resendConnection) {
+  const diagnostics = {
+    emailWorkerBound: false,
+    mxStatus: domain.routing_status === 'enabled' ? 'ready' : 'unknown',
+    catchAllStatus: 'not_configured',
+    catchAllPreview: null,
+    routingRuleStatus: 'unknown',
+    routingReady: false,
+    dnsIssues: [],
+    resendDnsRecords: [],
+    resendDnsStatus: domain.resend_status || 'not_started',
+    lastRoutingCheckAt: domain.routing_checked_at || null,
+    diagnosticError: null,
+  };
+
+  const catchAllAlias = aliasRules.find((alias) => alias.is_catch_all);
+  const mailboxTarget = domain.default_mailbox || null;
+  if (catchAllAlias) {
+    diagnostics.catchAllPreview = mailboxTarget
+      ? `*@${domain.hostname} -> ${mailboxTarget}`
+      : `*@${domain.hostname} -> ${catchAllAlias.mode}`;
+  }
+
+  if (!cfConnection?.secret || !domain.zone_id) {
+    return diagnostics;
+  }
+
+  try {
+    const [routing, dns, rules, catchAllRule, resendDomain] = await Promise.all([
+      getEmailRouting(cfConnection.secret, domain.zone_id),
+      getEmailRoutingDns(cfConnection.secret, domain.zone_id),
+      listRoutingRules(cfConnection.secret, domain.zone_id),
+      getCatchAllRule(cfConnection.secret, domain.zone_id).catch(() => null),
+      resendConnection?.secret && domain.resend_domain_id
+        ? getResendDomain(resendConnection.secret, domain.resend_domain_id).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    const routingEnabled = Boolean(routing?.enabled);
+    const routingStatus = String(routing?.status || domain.routing_status || 'unknown');
+    const dnsSummary = summarizeEmailRoutingDns(dns);
+    const expectedAliasCount = aliasRules.filter((alias) => !alias.is_catch_all && alias.enabled !== 0).length;
+    const activeWorkerRules = toArray(rules).filter((rule) =>
+      toArray(rule.actions).some((action) =>
+        action?.type === 'worker' && toArray(action.value).includes(EMAIL_WORKER_DESTINATION),
+      ),
+    );
+    const catchAllConfigured = Boolean(
+      catchAllAlias
+      && catchAllRule
+      && catchAllRule.enabled !== false
+      && toArray(catchAllRule.actions).some((action) =>
+        action?.type === 'worker' && toArray(action.value).includes(EMAIL_WORKER_DESTINATION),
+      ),
+    );
+    diagnostics.emailWorkerBound = routingEnabled && routingStatus === 'ready';
+    diagnostics.mxStatus = dnsSummary.mxStatus;
+    diagnostics.catchAllStatus = catchAllAlias
+      ? (catchAllConfigured ? 'configured' : 'missing')
+      : 'not_configured';
+    diagnostics.routingRuleStatus = activeWorkerRules.length >= expectedAliasCount ? 'configured' : 'missing';
+    diagnostics.routingReady = diagnostics.emailWorkerBound
+      && diagnostics.mxStatus === 'ready'
+      && diagnostics.routingRuleStatus === 'configured'
+      && (!catchAllAlias || diagnostics.catchAllStatus === 'configured');
+    diagnostics.dnsIssues = dnsSummary.missingRecords.map((record) => ({
+      type: record.type || '',
+      name: record.name || record.record || '',
+      value: record.content || record.value || '',
+      status: record.status || '',
+    }));
+    diagnostics.lastRoutingCheckAt = Date.now();
+    if (resendDomain) {
+      const resendSummary = summarizeResendDnsRecords(resendDomain);
+      diagnostics.resendDnsRecords = resendSummary.records;
+      diagnostics.resendDnsStatus = resendSummary.status;
+    }
+
+    await markDomainRoutingHealth(db, userId, domain.id, {
+      ok: diagnostics.routingReady,
+      message: diagnostics.routingReady
+        ? null
+        : [
+            diagnostics.mxStatus !== 'ready' ? 'MX records are not ready.' : null,
+            diagnostics.routingRuleStatus !== 'configured' ? 'Email routing rules are missing.' : null,
+            catchAllAlias && diagnostics.catchAllStatus !== 'configured' ? 'Catch-all rule is not configured.' : null,
+            diagnostics.emailWorkerBound ? null : `Email Routing status is ${routingStatus}.`,
+          ].filter(Boolean).join(' '),
+      routingStatus: diagnostics.routingReady ? 'enabled' : 'degraded',
+    });
+  } catch (error) {
+    diagnostics.diagnosticError = error.message;
+    diagnostics.lastRoutingCheckAt = Date.now();
+    await markDomainRoutingHealth(db, userId, domain.id, {
+      ok: false,
+      message: error.message,
+      routingStatus: 'degraded',
+    });
+  }
+
+  return diagnostics;
 }
 
 function getRealtimeStub(env, userId) {
@@ -568,12 +773,19 @@ async function getRealtimeContext(request, env) {
 }
 
 async function bootstrapData(db, env, userId) {
-  const [user, connections, domains, mailboxesPage, alerts] = await Promise.all([
+  const [user, connections, domains, mailboxesPage, alerts, folderCounts, mailboxUnreadCounts] = await Promise.all([
     getUser(db, userId),
     listConnections(db, userId),
     listDomains(db, userId),
     listMailboxesPage(db, userId, { limit: 100 }),
     getAlertCounts(db, userId),
+    getFolderCounts(db, userId),
+    getMailboxUnreadCounts(db, userId),
+  ]);
+  const [cfConnection, resendConnection, aliases] = await Promise.all([
+    loadSecret(db, env, userId, 'cloudflare'),
+    loadSecret(db, env, userId, 'resend'),
+    listAliasRules(db, userId),
   ]);
   const resendConnected = connections.some((connection) => connection.provider === 'resend');
   const selectedSendingDomainId = domains.some((domain) => domain.id === user?.selected_sending_domain_id)
@@ -584,16 +796,32 @@ async function bootstrapData(db, env, userId) {
   const sendingStatusMessage = sendingDomain
     ? null
     : getWorkspaceSendingStatus({ resendConnected, selectedDomain });
-  const hydratedDomains = domains.map((domain) => ({
-    ...domain,
-    sendCapability: domain.send_capability || SEND_CAPABILITY.RECEIVE_ONLY,
-    canSend: (domain.send_capability || SEND_CAPABILITY.RECEIVE_ONLY) === SEND_CAPABILITY.ENABLED,
-    isSelectedSendingDomain: domain.id === selectedSendingDomainId,
-  }));
+  const hydratedDomains = await Promise.all(
+    domains.map(async (domain) => {
+      const diagnostics = await collectDomainDiagnostics(
+        db,
+        env,
+        userId,
+        domain,
+        aliases.filter((alias) => alias.domain_id === domain.id),
+        cfConnection,
+        resendConnection,
+      );
+      return {
+        ...domain,
+        ...diagnostics,
+        sendCapability: domain.send_capability || SEND_CAPABILITY.RECEIVE_ONLY,
+        canSend: (domain.send_capability || SEND_CAPABILITY.RECEIVE_ONLY) === SEND_CAPABILITY.ENABLED,
+        isSelectedSendingDomain: domain.id === selectedSendingDomainId,
+      };
+    }),
+  );
   return {
     connections: connections.map(toConnectionSummary),
     domains: hydratedDomains,
     mailboxes: mailboxesPage.items,
+    folderCounts,
+    mailboxUnreadCounts,
     selectedSendingDomainId,
     sendingDomainId: sendingDomain?.id || null,
     sendingStatusMessage,
@@ -1401,6 +1629,63 @@ async function handleDrafts(request, env, user, pathParts) {
   return apiError(405, 'Unsupported draft route');
 }
 
+async function queueIngestFailureRetry(env, ingestFailure) {
+  const payloadJson = typeof ingestFailure.payload_json === 'string'
+    ? JSON.parse(ingestFailure.payload_json || '{}')
+    : (ingestFailure.payload_json || {});
+  const payload = {
+    ...payloadJson,
+    userId: ingestFailure.user_id || payloadJson.userId || null,
+    domainId: ingestFailure.domain_id || payloadJson.domainId || null,
+    to: ingestFailure.recipient || payloadJson.to || '',
+    messageId: ingestFailure.message_id || payloadJson.messageId || null,
+    rawKey: ingestFailure.raw_r2_key || payloadJson.rawKey || null,
+  };
+  if (!payload.rawKey) {
+    const error = new Error('Ingest failure does not have a raw message key.');
+    error.status = 400;
+    throw error;
+  }
+  await env.DB.prepare(
+    `UPDATE ingest_failures
+     SET retry_count = retry_count + 1,
+         last_seen_at = ?2
+     WHERE id = ?1`,
+  ).bind(ingestFailure.id, Date.now()).run();
+  await env.MAIL_INGEST_QUEUE.send(payload);
+  if (ingestFailure.user_id) {
+    await publishRealtimeEvent(env, ingestFailure.user_id, {
+      type: 'ingest.retrying',
+      ingestFailureId: ingestFailure.id,
+    });
+  }
+}
+
+async function handleIngestFailures(request, env, user, pathParts) {
+  if (request.method === 'GET' && pathParts.length === 2) {
+    const url = parseUrl(request);
+    const page = await listIngestFailuresPage(env.DB, user.id, {
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+      includeResolved: url.searchParams.get('includeResolved') === 'true',
+    });
+    return json({
+      items: page.items,
+      nextCursor: page.nextCursor,
+      ingestFailures: page.items,
+    });
+  }
+
+  if (request.method === 'POST' && pathParts.length === 4 && pathParts[3] === 'retry') {
+    const ingestFailure = await getIngestFailure(env.DB, user.id, pathParts[2]);
+    if (!ingestFailure) return apiError(404, 'Ingest failure not found');
+    await queueIngestFailureRetry(env, ingestFailure);
+    return json({ ok: true, ingestFailureId: ingestFailure.id });
+  }
+
+  return apiError(405, 'Unsupported ingest failure route');
+}
+
 async function handleUpload(request, env, user) {
   const formData = await request.formData();
   const file = formData.get('file');
@@ -1411,13 +1696,17 @@ async function handleUpload(request, env, user) {
       contentType: file.type || 'application/octet-stream',
     },
   });
+  const attachment = {
+    id: createId('upl_'),
+    fileName: file.name,
+    mimeType: file.type || 'application/octet-stream',
+    byteSize: file.size,
+    r2Key: key,
+  };
   return json({
     attachment: {
-      id: createId('upl_'),
-      fileName: file.name,
-      mimeType: file.type || 'application/octet-stream',
-      byteSize: file.size,
-      r2Key: key,
+      ...attachment,
+      publicUrl: file.type.startsWith('image/') ? await buildInlineImageUrl(request, env, attachment) : null,
     },
   });
 }
@@ -1448,7 +1737,7 @@ function textToEmailHtml(text) {
   return `<div>${paragraphs.map((paragraph) => `<p>${paragraph}</p>`).join('')}</div>`;
 }
 
-async function prepareResendAttachments(request, env, attachments) {
+async function prepareResendAttachments(request, env, user, attachments) {
   let totalBytes = 0;
   const result = [];
   for (const attachment of attachments || []) {
@@ -1468,7 +1757,7 @@ async function prepareResendAttachments(request, env, attachments) {
     }
     result.push({
       filename: attachment.fileName,
-      path: await buildAttachmentUrl(request, env, attachment),
+      path: await buildAttachmentUrl(request, env, user, attachment),
     });
   }
   return result;
@@ -1523,7 +1812,7 @@ async function handleSend(request, env, user) {
   if (!to.length) {
     return apiError(400, 'Add at least one valid recipient in the To field.');
   }
-  const attachments = await prepareResendAttachments(request, env, payload.attachments || []);
+  const attachments = await prepareResendAttachments(request, env, user, payload.attachments || []);
   const htmlBody = String(payload.htmlBody || '').trim() || textToEmailHtml(payload.textBody || '');
   const sendResult = await sendResendEmail(resend.secret, {
     from: formatSender(mailbox.display_name, mailbox.email_address),
@@ -1658,16 +1947,41 @@ async function handlePublicAttachment(request, env) {
   const url = parseUrl(request);
   const key = url.searchParams.get('key');
   const exp = Number(url.searchParams.get('exp') || 0);
+  const uid = url.searchParams.get('uid');
+  const aid = url.searchParams.get('aid');
   const sig = url.searchParams.get('sig') || '';
-  if (!key || !exp || !sig) return apiError(400, 'Missing attachment signature');
+  if (!key || !exp || !uid || !aid || !sig) return apiError(400, 'Missing attachment signature');
   if (exp < Math.floor(Date.now() / 1000)) return apiError(403, 'Attachment URL expired');
   const r2Key = decodeBase64Url(key);
-  const valid = await verifyAttachmentSignature(env, `${r2Key}:${exp}`, sig);
+  const userId = decodeBase64Url(uid);
+  const attachmentId = decodeBase64Url(aid);
+  const valid = await verifyAttachmentSignature(env, `${userId}:${attachmentId}:${r2Key}:${exp}`, sig);
   if (!valid) return apiError(403, 'Invalid attachment signature');
   const object = await env.MAIL_BUCKET.get(r2Key);
   if (!object) return apiError(404, 'Attachment not found');
   const headers = new Headers();
   object.writeHttpMetadata(headers);
+  return new Response(object.body, { headers });
+}
+
+async function handlePublicInlineImage(request, env) {
+  const url = parseUrl(request);
+  const key = url.searchParams.get('key');
+  const aid = url.searchParams.get('aid');
+  const sig = url.searchParams.get('sig') || '';
+  if (!key || !aid || !sig) return apiError(400, 'Missing inline image signature');
+  const r2Key = decodeBase64Url(key);
+  const attachmentId = decodeBase64Url(aid);
+  const valid = await verifyAttachmentSignature(env, `inline:${attachmentId}:${r2Key}`, sig);
+  if (!valid) return apiError(403, 'Invalid inline image signature');
+  const object = await env.MAIL_BUCKET.get(r2Key);
+  if (!object) return apiError(404, 'Inline image not found');
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  const contentType = headers.get('Content-Type') || 'application/octet-stream';
+  if (!contentType.startsWith('image/')) return apiError(400, 'Requested asset is not an image');
+  headers.set('Content-Type', contentType);
+  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
   return new Response(object.body, { headers });
 }
 
@@ -1784,6 +2098,62 @@ async function queueIngest(payload, env) {
     });
 }
 
+function shouldRetryIngestFailure(failure, now = Date.now()) {
+  const retryCount = Number(failure.retry_count || 0);
+  const lastSeenAt = Number(failure.last_seen_at || 0);
+  const backoffMs = Math.min(6 * 60 * 60 * 1000, 5 * 60 * 1000 * 2 ** Math.min(retryCount, 6));
+  return lastSeenAt + backoffMs <= now;
+}
+
+async function refreshUserReliabilityState(env, userId) {
+  const user = await getUser(env.DB, userId);
+  if (!user) return;
+  const resendConnection = await loadSecret(env.DB, env, userId, 'resend');
+  await reconcileSendingDomainState(env.DB, env, userId, {
+    user,
+    resendConnection,
+    refreshResendMetadata: true,
+  });
+  const domains = await listDomains(env.DB, userId);
+  const aliases = await listAliasRules(env.DB, userId);
+  const cfConnection = await loadSecret(env.DB, env, userId, 'cloudflare');
+  await Promise.all(
+    domains.map((domain) =>
+      collectDomainDiagnostics(
+        env.DB,
+        env,
+        userId,
+        domain,
+        aliases.filter((alias) => alias.domain_id === domain.id),
+        cfConnection,
+        resendConnection,
+      ),
+    ),
+  );
+}
+
+async function processScheduledIngestRetries(env) {
+  const rows = await env.DB.prepare(
+    `SELECT *
+     FROM ingest_failures
+     WHERE resolved_at IS NULL
+     ORDER BY last_seen_at ASC
+     LIMIT ?1`,
+  ).bind(MAX_SCHEDULED_INGEST_RETRIES).all();
+  const failures = rows.results || [];
+  for (const failure of failures) {
+    if (!shouldRetryIngestFailure(failure)) continue;
+    try {
+      await queueIngestFailureRetry(env, failure);
+    } catch (error) {
+      console.error('scheduled_ingest_retry_failed', {
+        ingestFailureId: failure.id,
+        message: error.message,
+      });
+    }
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = parseUrl(request);
@@ -1796,11 +2166,15 @@ export default {
       }
     }
     if (url.pathname === '/api/runtime-config') {
-      return withCors(request, env, json(buildRuntimeConfig(env)));
+      return withCors(request, env, json(buildRuntimeConfig(request, env)));
     }
 
     if (url.pathname === '/api/public/attachments' && request.method === 'GET') {
       return withCors(request, env, await handlePublicAttachment(request, env));
+    }
+
+    if (url.pathname === '/api/public/inline-image' && request.method === 'GET') {
+      return withCors(request, env, await handlePublicInlineImage(request, env));
     }
 
     if (url.pathname === '/api/realtime' && request.method === 'GET') {
@@ -1816,7 +2190,7 @@ export default {
 
     const parts = parsePath(url);
     if (parts[0] !== 'api') {
-      const assetResponse = await env.ASSETS.fetch(request);
+      const assetResponse = withSecurityHeaders(request, env, await env.ASSETS.fetch(request));
       return withCors(request, env, assetResponse);
     }
 
@@ -1880,6 +2254,10 @@ export default {
 
       if (parts[1] === 'drafts') {
         return withCors(request, env, await handleDrafts(request, env, user, parts));
+      }
+
+      if (parts[1] === 'ingest-failures') {
+        return withCors(request, env, await handleIngestFailures(request, env, user, parts));
       }
 
       if (parts[1] === 'uploads' && request.method === 'POST') {
@@ -1983,5 +2361,21 @@ export default {
       await queueIngest(item.body, env);
       item.ack();
     }
+  },
+
+  async scheduled(_controller, env) {
+    await ensureSchema(env.DB);
+    const users = await env.DB.prepare('SELECT id FROM users').all();
+    for (const row of users.results || []) {
+      try {
+        await refreshUserReliabilityState(env, row.id);
+      } catch (error) {
+        console.error('scheduled_user_refresh_failed', {
+          userId: row.id,
+          message: error.message,
+        });
+      }
+    }
+    await processScheduledIngestRetries(env);
   },
 };

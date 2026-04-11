@@ -15,6 +15,7 @@ export interface RuntimeFirebaseConfig {
 export interface RuntimeConfig {
   firebase: RuntimeFirebaseConfig;
   appName?: string;
+  apiBaseUrl?: string;
 }
 
 export interface UserSummary {
@@ -43,12 +44,32 @@ export interface DomainRecord {
   label?: string;
   routing_status: string;
   routing_error?: string | null;
+  routing_checked_at?: number | null;
   resend_status?: string;
   send_capability?: string;
   sendCapability?: string;
   canSend?: boolean;
   isSelectedSendingDomain?: boolean;
   account_id?: string;
+  emailWorkerBound?: boolean;
+  mxStatus?: string;
+  catchAllStatus?: string;
+  catchAllPreview?: string | null;
+  routingRuleStatus?: string;
+  routingReady?: boolean;
+  dnsIssues?: Array<{ type?: string; name?: string; value?: string; status?: string }>;
+  resendDnsRecords?: Array<{
+    record?: string;
+    name?: string;
+    type?: string;
+    value?: string;
+    status?: string;
+    ttl?: number | null;
+    priority?: number | null;
+  }>;
+  resendDnsStatus?: string;
+  lastRoutingCheckAt?: number | null;
+  diagnosticError?: string | null;
 }
 
 export interface MailboxRecord {
@@ -111,7 +132,15 @@ export interface UploadedAttachment {
   file_name?: string;
   contentType?: string;
   content_type?: string;
+  mimeType?: string;
+  mime_type?: string;
   size?: number;
+  byteSize?: number;
+  byte_size?: number;
+  r2Key?: string;
+  r2_key?: string;
+  publicUrl?: string;
+  public_url?: string;
 }
 
 export interface ThreadSummary {
@@ -123,6 +152,9 @@ export interface ThreadSummary {
   subject?: string;
   snippet?: string;
   latest_message_at?: string;
+  unread_count?: number;
+  starred?: number;
+  folder?: string;
 }
 
 export interface MessageRecord {
@@ -154,11 +186,38 @@ export interface AlertCounts {
   ingestFailures: number;
 }
 
+export interface FolderCounts {
+  inbox: number;
+  sent: number;
+  archive: number;
+  trash: number;
+  drafts: number;
+}
+
+export type MailboxUnreadCounts = Record<string, number>;
+
+export interface IngestFailureRecord {
+  id: string;
+  user_id?: string | null;
+  domain_id?: string | null;
+  recipient: string;
+  message_id?: string | null;
+  raw_r2_key: string;
+  reason: string;
+  payload_json?: Record<string, unknown>;
+  first_seen_at?: number;
+  last_seen_at?: number;
+  retry_count?: number;
+  resolved_at?: number | null;
+}
+
 export interface BootPayload {
   user: UserSummary;
   connections: ConnectionSummary[];
   domains: DomainRecord[];
   mailboxes: MailboxRecord[];
+  folderCounts?: FolderCounts;
+  mailboxUnreadCounts?: MailboxUnreadCounts;
   selectedSendingDomainId?: string | null;
   sendingDomainId?: string | null;
   sendingStatusMessage?: string | null;
@@ -173,6 +232,17 @@ export interface WorkspaceData {
   forwardDestinations: ForwardDestinationRecord[];
   aliases: AliasRuleRecord[];
   drafts: DraftRecord[];
+  ingestFailures: IngestFailureRecord[];
+}
+
+export interface CursorState {
+  threads: string | null;
+  drafts: string | null;
+  aliases: string | null;
+  forwardDestinations: string | null;
+  htmlTemplates: string | null;
+  mailboxes: string | null;
+  ingestFailures: string | null;
 }
 
 export interface ComposeDraft {
@@ -230,6 +300,9 @@ export interface AppController {
   selectedThread: ThreadDetail | null;
   composeSeed: ComposeDraft | null;
   alertCounts: AlertCounts;
+  folderCounts: FolderCounts;
+  mailboxUnreadCounts: MailboxUnreadCounts;
+  cursors: CursorState;
   selectedSendingDomainId: string | null;
   sendingDomainId: string | null;
   sendingStatusMessage: string | null;
@@ -248,7 +321,11 @@ export interface AppController {
   openForward: () => Promise<void>;
   archiveSelected: () => Promise<void>;
   restoreSelected: () => Promise<void>;
+  restoreArchivedSelected: () => Promise<void>;
   trashSelected: () => Promise<void>;
+  starSelected: () => Promise<void>;
+  markReadSelected: () => Promise<void>;
+  markUnreadSelected: () => Promise<void>;
   emptyTrash: () => Promise<void>;
   downloadAttachment: (attachmentId: string) => Promise<void>;
   saveConnection: (provider: 'cloudflare' | 'resend' | 'gemini' | 'groq', input: Record<string, unknown>) => Promise<void>;
@@ -265,6 +342,14 @@ export interface AppController {
   saveForwardDestination: (input: Record<string, unknown>) => Promise<void>;
   deleteDraft: (draftId: string) => Promise<void>;
   deleteAllDrafts: () => Promise<void>;
+  retryIngestFailure: (ingestFailureId: string) => Promise<void>;
+  loadMoreThreads: () => Promise<void>;
+  loadMoreDrafts: () => Promise<void>;
+  loadMoreAliases: () => Promise<void>;
+  loadMoreForwardDestinations: () => Promise<void>;
+  loadMoreHtmlTemplates: () => Promise<void>;
+  loadMoreMailboxes: () => Promise<void>;
+  loadMoreIngestFailures: () => Promise<void>;
   sendCompose: (draft: ComposeDraft) => Promise<void>;
   saveComposeDraft: (draft: ComposeDraft, quiet?: boolean) => Promise<DraftRecord | null>;
   uploadComposeAttachments: (draft: ComposeDraft, files: FileList | File[]) => Promise<UploadedAttachment[]>;

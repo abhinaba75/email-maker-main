@@ -132,7 +132,10 @@ export default function App() {
                 mailboxLabel={mailboxFilter || 'All mailboxes'}
                 folderLabel={controller.folder.charAt(0).toUpperCase() + controller.folder.slice(1)}
                 emptyMessage={emptyMessage}
+                loading={/^Loading\b/.test(controller.status)}
+                canLoadMore={Boolean(controller.cursors.threads)}
                 onSelect={(threadId) => void controller.selectThread(threadId).catch(console.error)}
+                onLoadMore={() => void controller.loadMoreThreads().catch(console.error)}
               />
               <ThreadPreview
                 thread={controller.selectedThread}
@@ -163,6 +166,7 @@ export default function App() {
         )}
         onClose={controller.closeCompose}
         onSaveDraft={controller.saveComposeDraft}
+        onSaveTemplate={controller.saveTemplate}
         onSend={controller.sendCompose}
         onUploadAttachments={controller.uploadComposeAttachments}
         onAiAction={controller.runComposeAiAction}

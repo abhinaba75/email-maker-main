@@ -18,7 +18,7 @@ export function escapeHtml(value: unknown): string {
     .replaceAll("'", '&#39;');
 }
 
-export function formatDateTime(value?: string | null): string {
+export function formatDateTime(value?: string | number | null): string {
   if (!value) return '';
   try {
     return new Intl.DateTimeFormat(undefined, {
@@ -29,7 +29,7 @@ export function formatDateTime(value?: string | null): string {
       minute: '2-digit',
     }).format(new Date(value));
   } catch {
-    return value;
+    return String(value);
   }
 }
 

@@ -26,7 +26,10 @@ Cloudflare Worker mail console with:
 ## Notes
 
 - The app verifies Firebase ID tokens on the Worker before any protected API call.
+- Firebase is used for Google authentication only. This repo is not configured for `firebase deploy`; the Worker remains the deploy target.
 - Firebase web config is delivered through Worker environment vars and is intentionally exposed to the browser. All protected API routes still verify Firebase ID tokens on the Worker.
 - Cloudflare Email Routing rules preserve forwarding and route inbox delivery directly into the Email Worker.
+- Cloudflare is the canonical app origin. Vercel is redirect-only and should not proxy Worker APIs or assets.
 - Configure `ALLOWED_ORIGINS` so only your Cloudflare production origin and local development origins can call the Worker API cross-origin.
 - Wrangler now serves the built frontend from `dist`, while Vite owns the React client source under [`src`](C:/Users/abhin/Downloads/Programming/email-maker/email-maker/src).
+- Raw `.eml` retention should be enforced with an R2 lifecycle rule at the bucket level, not inside Worker code.

@@ -1,4 +1,4 @@
-import { Archive, Forward, Plus, RefreshCcw, Reply, Search, Trash2 } from 'lucide-react';
+import { Archive, Forward, Mail, MailOpen, Plus, RefreshCcw, Reply, RotateCcw, Search, Star, Trash2 } from 'lucide-react';
 import type { ViewId } from '../types';
 
 interface TopHeaderProps {
@@ -12,11 +12,18 @@ interface TopHeaderProps {
   onReply: () => void;
   onForward: () => void;
   onArchive: () => void;
+  onRestore: () => void;
   onTrash: () => void;
+  onStar: () => void;
+  onMarkRead: () => void;
+  onMarkUnread: () => void;
   onEmptyTrash: () => void;
   onRefresh: () => void;
   canActOnThread: boolean;
   canEmptyTrash: boolean;
+  canRestore: boolean;
+  isThreadStarred: boolean;
+  isThreadUnread: boolean;
   subtitle?: string | null;
 }
 
@@ -40,11 +47,18 @@ export function TopHeader({
   onReply,
   onForward,
   onArchive,
+  onRestore,
   onTrash,
+  onStar,
+  onMarkRead,
+  onMarkUnread,
   onEmptyTrash,
   onRefresh,
   canActOnThread,
   canEmptyTrash,
+  canRestore,
+  isThreadStarred,
+  isThreadUnread,
   subtitle,
 }: TopHeaderProps) {
   const title = view === 'mail' ? (mailTitle || 'Inbox') : TITLES[view];
@@ -87,10 +101,29 @@ export function TopHeader({
             <Forward size={16} />
             Forward
           </button>
+          <button type="button" className="toolbar-button" onClick={onStar} disabled={!canActOnThread}>
+            <Star size={16} />
+            {isThreadStarred ? 'Unstar' : 'Star'}
+          </button>
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={isThreadUnread ? onMarkRead : onMarkUnread}
+            disabled={!canActOnThread}
+          >
+            {isThreadUnread ? <MailOpen size={16} /> : <Mail size={16} />}
+            {isThreadUnread ? 'Mark read' : 'Mark unread'}
+          </button>
           <button type="button" className="toolbar-button" onClick={onArchive} disabled={!canActOnThread}>
             <Archive size={16} />
             Archive
           </button>
+          {canRestore ? (
+            <button type="button" className="toolbar-button" onClick={onRestore} disabled={!canActOnThread}>
+              <RotateCcw size={16} />
+              Restore
+            </button>
+          ) : null}
           <button type="button" className="toolbar-button" onClick={onTrash} disabled={!canActOnThread}>
             <Trash2 size={16} />
             {isTrashView ? 'Delete forever' : 'Delete'}

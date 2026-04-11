@@ -60,7 +60,13 @@
       }
     ]
   },
+  "triggers": {
+    "crons": [
+      "*/20 * * * *"
+    ]
+  },
   "vars": {
-    "APP_NAME": "Email By Abhinaba Das"
+    "APP_NAME": "Email By Abhinaba Das",
+    "PUBLIC_APP_ORIGIN": "https://email.itsabhinaba.in"
   }
 }

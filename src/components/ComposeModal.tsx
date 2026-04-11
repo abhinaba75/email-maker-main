@@ -19,7 +19,7 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react';
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type ClipboardEvent, type DragEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { AI_TONE_OPTIONS, GEMINI_MODEL_OPTIONS } from '../lib/constants';
 import { formatAddresses, parseInlineAddressList } from '../lib/format';
 import {
@@ -36,6 +36,14 @@ const AI_PROVIDER_LABELS = {
   groq: 'Llama',
 } as const;
 
+function escapeHtmlAttribute(value: string) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 interface ComposeModalProps {
   draft: ComposeDraft | null;
   htmlTemplates: HtmlTemplateRecord[];
@@ -45,6 +53,7 @@ interface ComposeModalProps {
   sendingSummaryMessage: string;
   onClose: () => void;
   onSaveDraft: (draft: ComposeDraft, quiet?: boolean) => Promise<DraftRecord | null>;
+  onSaveTemplate: (templateId: string | null, input: Record<string, unknown>) => Promise<void>;
   onSend: (draft: ComposeDraft) => Promise<void>;
   onUploadAttachments: (draft: ComposeDraft, files: FileList | File[]) => Promise<ComposeDraft['attachments']>;
   onAiAction: (draft: ComposeDraft, action: string, selectionText?: string) => Promise<AiActionResult>;
@@ -59,6 +68,7 @@ export function ComposeModal({
   sendingSummaryMessage,
   onClose,
   onSaveDraft,
+  onSaveTemplate,
   onSend,
   onUploadAttachments,
   onAiAction,
@@ -239,7 +249,7 @@ export function ComposeModal({
     setDraftSyncState({ tone: 'muted', message: 'Unsaved changes.' });
     autosaveTimerRef.current = window.setTimeout(() => {
       void persistDraft({ quiet: true, force: false, reason: 'autosave' }).catch(console.error);
-    }, 3200);
+    }, 1500);
   }
 
   useEffect(() => {
@@ -346,6 +356,125 @@ export function ComposeModal({
     setForm((current) => (current ? { ...current, htmlBody: nextHtml, textBody: stripHtmlToText(nextHtml) } : current));
   }
 
+  function insertHtmlIntoContainer(container: HTMLElement, html: string) {
+    container.focus();
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !container.contains(selection.anchorNode)) {
+      container.insertAdjacentHTML('beforeend', html);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const fragment = range.createContextualFragment(html);
+    const lastNode = fragment.lastChild;
+    range.insertNode(fragment);
+    if (lastNode) {
+      range.setStartAfter(lastNode);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }
+
+  function insertHtmlIntoSource(html: string) {
+    if (!sourceRef.current) {
+      setHtmlDocument(`${form?.htmlBody || ''}${html}`);
+      return;
+    }
+    const textarea = sourceRef.current;
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? textarea.value.length;
+    const nextValue = `${textarea.value.slice(0, start)}${html}${textarea.value.slice(end)}`;
+    setHtmlDocument(nextValue);
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      const nextPosition = start + html.length;
+      textarea.selectionStart = nextPosition;
+      textarea.selectionEnd = nextPosition;
+    });
+  }
+
+  function collectClipboardImageFiles(event: ClipboardEvent<HTMLElement | HTMLTextAreaElement>) {
+    return Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+  }
+
+  function collectDroppedImageFiles(event: DragEvent<HTMLElement | HTMLTextAreaElement>) {
+    return Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
+  }
+
+  async function handleInlineImageFiles(files: File[], target: 'rich' | 'visual' | 'source') {
+    if (!files.length) return false;
+    const nextDraft = syncDraftFromEditors();
+    if (!nextDraft) return true;
+    setBusy(true);
+    try {
+      const attachments = await onUploadAttachments(nextDraft, files);
+      const uploadedImages = attachments.filter((attachment) => (
+        !nextDraft.attachments.some((existing) => existing.id === attachment.id)
+        && String(
+          attachment.mimeType
+          || attachment.mime_type
+          || attachment.contentType
+          || attachment.content_type
+          || '',
+        ).startsWith('image/')
+      ));
+      setForm((current) => (current ? { ...current, attachments } : current));
+      const markup = uploadedImages
+        .map((attachment) => {
+          const src = attachment.publicUrl || attachment.public_url || '';
+          if (!src) return '';
+          const alt = escapeHtmlAttribute(attachment.fileName || attachment.file_name || 'inline image');
+          return `<p><img src="${escapeHtmlAttribute(src)}" alt="${alt}" style="display:block;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;" /></p>`;
+        })
+        .filter(Boolean)
+        .join('');
+      if (!markup) return true;
+      if (target === 'source') {
+        insertHtmlIntoSource(markup);
+        return true;
+      }
+      if (target === 'visual' && visualEditorRef.current) {
+        insertHtmlIntoContainer(visualEditorRef.current, markup);
+        syncVisualHtml();
+        return true;
+      }
+      if (target === 'rich' && richEditorRef.current) {
+        insertHtmlIntoContainer(richEditorRef.current, markup);
+        const nextHtml = richEditorRef.current.innerHTML || '<p><br></p>';
+        setForm((current) => (current ? {
+          ...current,
+          attachments,
+          htmlBody: nextHtml,
+          textBody: stripHtmlToText(nextHtml),
+        } : current));
+      }
+      return true;
+    } catch (error) {
+      console.error(error);
+      return true;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleEditorPaste(event: ClipboardEvent<HTMLElement | HTMLTextAreaElement>, target: 'rich' | 'visual' | 'source') {
+    const files = collectClipboardImageFiles(event);
+    if (!files.length) return;
+    event.preventDefault();
+    void handleInlineImageFiles(files, target);
+  }
+
+  function handleEditorDrop(event: DragEvent<HTMLElement | HTMLTextAreaElement>, target: 'rich' | 'visual' | 'source') {
+    const files = collectDroppedImageFiles(event);
+    if (!files.length) return;
+    event.preventDefault();
+    void handleInlineImageFiles(files, target);
+  }
+
   async function handleSaveDraft(quiet = false) {
     setBusy(true);
     try {
@@ -418,6 +547,29 @@ export function ComposeModal({
         }
         setForm((current) => (current ? { ...current, subject: nextSubject, htmlBody: nextHtml, textBody: stripHtmlToText(nextHtml) } : current));
       }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveAsTemplate() {
+    const nextDraft = syncDraftFromEditors();
+    if (!nextDraft) return;
+    const currentTemplate = htmlTemplates.find((template) => template.id === nextDraft.templateId) || null;
+    const suggestedName = currentTemplate?.name || nextDraft.subject || 'New HTML template';
+    const name = window.prompt('Template name', suggestedName)?.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      await onSaveTemplate(currentTemplate?.id || null, {
+        domainId: nextDraft.domainId || null,
+        name,
+        subject: nextDraft.subject || '',
+        htmlContent: nextDraft.htmlBody || textToComposeHtml(nextDraft.textBody || ''),
+      });
+      setForm((current) => (current ? { ...current, templateId: currentTemplate?.id || current.templateId } : current));
     } catch (error) {
       console.error(error);
     } finally {
@@ -612,6 +764,9 @@ export function ComposeModal({
                 <button type="button" className="toolbar-button" onClick={() => form.templateId && applyTemplate(form.templateId)} disabled={!form.templateId}>
                   Apply template
                 </button>
+                <button type="button" className="toolbar-button" onClick={() => void handleSaveAsTemplate()} disabled={busy}>
+                  Save as template
+                </button>
               </div>
             </div>
 
@@ -687,6 +842,9 @@ export function ComposeModal({
                     className="rich-editor"
                     contentEditable
                     suppressContentEditableWarning
+                    onPaste={(event) => handleEditorPaste(event, 'rich')}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => handleEditorDrop(event, 'rich')}
                     onInput={() => {
                       const nextHtml = richEditorRef.current?.innerHTML || '<p><br></p>';
                       setForm((current) => current ? { ...current, htmlBody: nextHtml, textBody: stripHtmlToText(nextHtml) } : current);
@@ -717,6 +875,9 @@ export function ComposeModal({
                       className="visual-editor"
                       contentEditable
                       suppressContentEditableWarning
+                      onPaste={(event) => handleEditorPaste(event, 'visual')}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => handleEditorDrop(event, 'visual')}
                       onInput={syncVisualHtml}
                       onClick={(event) => {
                         if (event.target instanceof HTMLAnchorElement) {
@@ -734,6 +895,9 @@ export function ComposeModal({
                       ref={sourceRef}
                       className="html-source-textarea"
                       defaultValue={form.htmlBody || textToComposeHtml(form.textBody)}
+                      onPaste={(event) => handleEditorPaste(event, 'source')}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => handleEditorDrop(event, 'source')}
                       onInput={(event) => setHtmlDocument(event.currentTarget.value)}
                     />
                   </label>

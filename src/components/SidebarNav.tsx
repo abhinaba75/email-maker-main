@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { SIDEBAR_GROUPS } from '../lib/constants';
 import { getDomain } from '../lib/format';
-import type { DomainRecord, MailboxRecord, UserSummary, ViewId, FolderId } from '../types';
+import type { DomainRecord, FolderCounts, FolderId, MailboxRecord, MailboxUnreadCounts, UserSummary, ViewId } from '../types';
 
 const ICONS: Record<string, LucideIcon> = {
   'mail:inbox': Inbox,
@@ -35,7 +35,8 @@ interface SidebarNavProps {
   activeView: ViewId;
   activeFolder: FolderId;
   activeMailboxId: string | null;
-  threadCount: number;
+  folderCounts: FolderCounts;
+  mailboxUnreadCounts: MailboxUnreadCounts;
   onNavigate: (target: string) => void;
   onMailboxOpen: (mailboxId: string) => void;
   onSignOut: () => void;
@@ -48,7 +49,8 @@ export function SidebarNav({
   activeView,
   activeFolder,
   activeMailboxId,
-  threadCount,
+  folderCounts,
+  mailboxUnreadCounts,
   onNavigate,
   onMailboxOpen,
   onSignOut,
@@ -70,7 +72,17 @@ export function SidebarNav({
               {group.items.map((item) => {
                 const Icon = ICONS[item.id] || Mail;
                 const isActive = item.id === activeView || item.id === `mail:${activeFolder}`;
-                const badge = item.id === `mail:${activeFolder}` ? threadCount : null;
+                const badge = item.id === 'mail:inbox'
+                  ? folderCounts.inbox
+                  : item.id === 'mail:sent'
+                    ? folderCounts.sent
+                    : item.id === 'drafts'
+                      ? folderCounts.drafts
+                      : item.id === 'mail:archive'
+                        ? folderCounts.archive
+                        : item.id === 'mail:trash'
+                          ? folderCounts.trash
+                          : null;
                 return (
                   <button
                     key={item.id}
@@ -85,7 +97,7 @@ export function SidebarNav({
                       <span className="nav-label">{item.label}</span>
                       <span className="nav-meta">{item.meta}</span>
                     </span>
-                    {badge ? <span className="nav-count">{badge}</span> : null}
+                    {Number(badge) > 0 ? <span className="nav-count">{badge}</span> : null}
                   </button>
                 );
               })}
@@ -112,6 +124,9 @@ export function SidebarNav({
                     <span className="nav-label">{mailbox.email_address}</span>
                     <span className="nav-meta">{domain?.hostname || 'Mailbox'}</span>
                   </span>
+                  {Number(mailboxUnreadCounts[mailbox.id] || 0) > 0 ? (
+                    <span className="nav-count">{mailboxUnreadCounts[mailbox.id]}</span>
+                  ) : null}
                 </button>
               );
             })}
