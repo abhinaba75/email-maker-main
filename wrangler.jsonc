@@ -68,5 +68,11 @@
   "vars": {
     "APP_NAME": "Email By Abhinaba Das",
     "PUBLIC_APP_ORIGIN": "https://email.itsabhinaba.in"
-  }
+  },
+  "routes": [
+    {
+      "pattern": "email.itsabhinaba.in",
+      "custom_domain": true
+    }
+  ]
 }
