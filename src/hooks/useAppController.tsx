@@ -210,13 +210,78 @@ export function useAppController(): AppController {
   }
 
   function showError(error: unknown) {
-    const message = error instanceof Error ? error.message : 'An unexpected error occurred.';
+    const message = formatErrorMessage(error, runtimeRef.current);
     setStatus(message);
     if (!user) {
       setLoginMessage(message);
       setBooting(false);
     }
-    console.error(error);
+    console.error('app_error', serializeError(error, runtimeRef.current));
+  }
+
+  function serializeError(
+    error: unknown,
+    runtimeConfig: RuntimeConfig | null,
+  ): Record<string, unknown> {
+    const payload: Record<string, unknown> = {
+      origin: typeof window !== 'undefined' ? window.location.origin : null,
+      host: typeof window !== 'undefined' ? window.location.host : null,
+      authDomain: runtimeConfig?.firebase.authDomain || null,
+      apiBaseUrl: runtimeConfig?.apiBaseUrl || null,
+    };
+    if (error instanceof Error) {
+      payload.name = error.name;
+      payload.message = error.message;
+      payload.stack = error.stack || null;
+    } else {
+      payload.message = 'An unexpected error occurred.';
+    }
+    if (typeof error === 'object' && error) {
+      const candidate = error as Record<string, unknown>;
+      for (const key of ['code', 'email', 'operationType', 'tenantId']) {
+        if (candidate[key] != null) payload[key] = candidate[key];
+      }
+      if (candidate.customData && typeof candidate.customData === 'object') {
+        payload.customData = candidate.customData;
+      }
+      if (candidate.user && typeof candidate.user === 'object') {
+        payload.user = candidate.user;
+      }
+    }
+    return payload;
+  }
+
+  function formatErrorMessage(error: unknown, runtimeConfig: RuntimeConfig | null): string {
+    const payload = serializeError(error, runtimeConfig);
+    const parts: string[] = [];
+    if (typeof payload.code === 'string' && payload.code) {
+      parts.push(payload.code);
+    }
+    if (typeof payload.message === 'string' && payload.message) {
+      parts.push(payload.message);
+    }
+    if (payload.customData && typeof payload.customData === 'object') {
+      const customData = payload.customData as Record<string, unknown>;
+      if (typeof customData._serverResponse === 'string' && customData._serverResponse) {
+        parts.push(`server=${customData._serverResponse}`);
+      }
+      if (typeof customData._tokenResponse === 'string' && customData._tokenResponse) {
+        parts.push(`token=${customData._tokenResponse}`);
+      }
+      if (typeof customData.email === 'string' && customData.email) {
+        parts.push(`email=${customData.email}`);
+      }
+    }
+    if (typeof payload.origin === 'string' && payload.origin) {
+      parts.push(`origin=${payload.origin}`);
+    }
+    if (typeof payload.authDomain === 'string' && payload.authDomain) {
+      parts.push(`authDomain=${payload.authDomain}`);
+    }
+    if (typeof payload.host === 'string' && payload.host) {
+      parts.push(`handler=https://${payload.host}/__/auth/handler`);
+    }
+    return parts.join(' | ') || 'An unexpected error occurred.';
   }
 
   async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
