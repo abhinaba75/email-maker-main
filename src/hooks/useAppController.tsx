@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   getAuth,
@@ -156,6 +156,15 @@ export function useAppController(): AppController {
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const realtimeSessionRef = useRef(0);
+
+  function ensureFirebaseAuth(config: RuntimeFirebaseConfig): boolean {
+    if (authRef.current && providerRef.current) return true;
+    if (!config.apiKey || !config.projectId) return false;
+    const firebaseApp = getApps().length ? getApp() : initializeApp(config);
+    authRef.current = getAuth(firebaseApp);
+    providerRef.current = providerRef.current || new GoogleAuthProvider();
+    return true;
+  }
 
   async function getFreshToken(forceRefresh = false): Promise<string> {
     const currentUser = authRef.current?.currentUser;
@@ -1036,7 +1045,14 @@ export function useAppController(): AppController {
   }
 
   async function signInWithGoogle() {
-    if (!authRef.current || !providerRef.current) return;
+    if (!authRef.current || !providerRef.current) {
+      ensureFirebaseAuth(normalizeFirebaseConfig(runtimeRef.current?.firebase));
+    }
+    if (!authRef.current || !providerRef.current) {
+      setLoginMessage('Authentication is still initializing. Please wait a moment and try again.');
+      setStatus('Authentication is still initializing.');
+      return;
+    }
     setLoginMessage('Opening Google sign-in...');
     setStatus('Opening Google sign-in...');
     try {
@@ -1086,11 +1102,13 @@ export function useAppController(): AppController {
           setBooting(false);
           return;
         }
-        const firebaseApp = initializeApp(config);
-        const auth = getAuth(firebaseApp);
-        const provider = new GoogleAuthProvider();
-        authRef.current = auth;
-        providerRef.current = provider;
+        if (!ensureFirebaseAuth(config) || !authRef.current) {
+          setLoginMessage('Firebase authentication could not be initialized.');
+          setStatus('Firebase authentication could not be initialized.');
+          setBooting(false);
+          return;
+        }
+        const auth = authRef.current;
 
         onIdTokenChanged(auth, async (firebaseUser: User | null) => {
           if (!active) return;
@@ -1130,6 +1148,25 @@ export function useAppController(): AppController {
         setStatus('Ready for Google sign-in.');
         setBooting(false);
       } catch (error) {
+        const fallbackConfig = normalizeFirebaseConfig(null);
+        const fallbackRuntime: RuntimeConfig = {
+          appName: runtimeRef.current?.appName || 'Email By Abhinaba Das',
+          apiBaseUrl: window.location.origin,
+          firebase: fallbackConfig,
+        };
+        if (!runtimeRef.current) {
+          setRuntime(fallbackRuntime);
+          runtimeRef.current = fallbackRuntime;
+        }
+        const fallbackReady = ensureFirebaseAuth(fallbackConfig);
+        if (fallbackReady) {
+          const message = `${formatErrorMessage(error, runtimeRef.current)} | Using fallback Firebase config; sign-in may still be limited until runtime config recovers.`;
+          setLoginMessage(message);
+          setStatus(message);
+          setBooting(false);
+          console.error('boot_error_with_fallback', serializeError(error, runtimeRef.current));
+          return;
+        }
         showError(error);
       }
     }

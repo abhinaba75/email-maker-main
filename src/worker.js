@@ -2188,8 +2188,7 @@ export default {
   async fetch(request, env) {
     const url = parseUrl(request);
     if (shouldProxyFirebaseHelper(url)) {
-      const response = await proxyFirebaseHelper(request, env, url);
-      return withSecurityHeaders(request, env, response);
+      return proxyFirebaseHelper(request, env, url);
     }
     if (isApiRequest(url)) {
       if (request.method === 'OPTIONS') {
