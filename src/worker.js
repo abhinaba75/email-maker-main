@@ -129,17 +129,46 @@ function resolveApiBaseUrl(request, env) {
 }
 
 function buildRuntimeConfig(request, env) {
+  const appOrigin = resolveApiBaseUrl(request, env);
+  let appHost = '';
+  try {
+    appHost = new URL(appOrigin).host;
+  } catch {
+    appHost = '';
+  }
   return {
     appName: env.APP_NAME || 'Email By Abhinaba Das',
-    apiBaseUrl: resolveApiBaseUrl(request, env),
+    apiBaseUrl: appOrigin,
     firebase: {
       apiKey: env.PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || '',
-      authDomain: env.PUBLIC_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || '',
+      authDomain: appHost || env.PUBLIC_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || '',
       projectId: env.PUBLIC_FIREBASE_PROJECT_ID || env.FIREBASE_PROJECT_ID || '',
       appId: env.PUBLIC_FIREBASE_APP_ID || env.FIREBASE_APP_ID || '',
       messagingSenderId: env.PUBLIC_FIREBASE_MESSAGING_SENDER_ID || env.FIREBASE_MESSAGING_SENDER_ID || '',
     },
   };
+}
+
+function getFirebaseProjectAuthOrigin(env) {
+  const firebaseAuthDomain = String(
+    env.PUBLIC_FIREBASE_AUTH_DOMAIN
+    || env.FIREBASE_AUTH_DOMAIN
+    || 'email-maker-forge-ad61.firebaseapp.com',
+  ).trim();
+  return firebaseAuthDomain ? `https://${firebaseAuthDomain}` : null;
+}
+
+function shouldProxyFirebaseHelper(url) {
+  return url.pathname.startsWith('/__/auth/') || url.pathname === '/__/firebase/init.json';
+}
+
+async function proxyFirebaseHelper(request, env, url) {
+  const firebaseAuthOrigin = getFirebaseProjectAuthOrigin(env);
+  if (!firebaseAuthOrigin) {
+    return new Response('Firebase auth helper origin is not configured.', { status: 500 });
+  }
+  const targetUrl = new URL(`${firebaseAuthOrigin}${url.pathname}${url.search}`);
+  return fetch(new Request(targetUrl.toString(), request));
 }
 
 function getAllowedOrigins(env, requestOrigin) {
@@ -200,12 +229,7 @@ function withSecurityHeaders(request, env, response) {
   const headers = new Headers(response.headers);
   const contentType = headers.get('Content-Type') || '';
   if (contentType.includes('text/html')) {
-    const firebaseAuthDomain = String(
-      env.PUBLIC_FIREBASE_AUTH_DOMAIN
-      || env.FIREBASE_AUTH_DOMAIN
-      || 'email-maker-forge-ad61.firebaseapp.com',
-    ).trim();
-    const firebaseAuthOrigin = firebaseAuthDomain ? `https://${firebaseAuthDomain}` : null;
+    const firebaseAuthOrigin = getFirebaseProjectAuthOrigin(env);
     headers.set(
       'Content-Security-Policy',
       [
@@ -218,7 +242,7 @@ function withSecurityHeaders(request, env, response) {
         "font-src 'self' data: https:",
         "script-src 'self' https://www.gstatic.com",
         "connect-src 'self' https: wss:",
-        ["frame-src", 'https://accounts.google.com', firebaseAuthOrigin, 'https://*.firebaseapp.com', 'https://*.web.app'].filter(Boolean).join(' '),
+        ["frame-src 'self'", 'https://accounts.google.com', firebaseAuthOrigin, 'https://*.firebaseapp.com', 'https://*.web.app'].filter(Boolean).join(' '),
         ["form-action 'self'", 'https://accounts.google.com', firebaseAuthOrigin, 'https://*.firebaseapp.com', 'https://*.web.app'].filter(Boolean).join(' '),
       ].join('; '),
     );
@@ -2163,6 +2187,10 @@ async function processScheduledIngestRetries(env) {
 export default {
   async fetch(request, env) {
     const url = parseUrl(request);
+    if (shouldProxyFirebaseHelper(url)) {
+      const response = await proxyFirebaseHelper(request, env, url);
+      return withSecurityHeaders(request, env, response);
+    }
     if (isApiRequest(url)) {
       if (request.method === 'OPTIONS') {
         return createPreflightResponse(request, env);
