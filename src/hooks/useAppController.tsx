@@ -4,12 +4,13 @@ import {
   GoogleAuthProvider,
   getAuth,
   onIdTokenChanged,
-  signInWithPopup,
+  signInWithCredential,
   signOut as firebaseSignOut,
   type Auth,
   type User,
 } from 'firebase/auth';
-import { AI_TONE_OPTIONS, BOOT_REQUEST_TIMEOUT_MS, FALLBACK_FIREBASE_CONFIG, GEMINI_MODEL_OPTIONS } from '../lib/constants';
+import { AI_TONE_OPTIONS, BOOT_REQUEST_TIMEOUT_MS, FALLBACK_FIREBASE_CONFIG, FALLBACK_GOOGLE_CLIENT_ID, GEMINI_MODEL_OPTIONS } from '../lib/constants';
+import type { GoogleTokenError, GoogleTokenResponse } from '../google-identity-services';
 import {
   buildAlertSummary,
   formatAddresses,
@@ -109,8 +110,56 @@ async function fetchRuntimeConfigFrom(url: string): Promise<RuntimeConfig> {
   const payload = (await response.json()) as RuntimeConfig;
   return {
     ...payload,
+    googleClientId: String(payload?.googleClientId || '').trim(),
     firebase: normalizeFirebaseConfig(payload?.firebase),
   };
+}
+
+function loadGoogleIdentityScript(): Promise<void> {
+  if (window.google?.accounts?.oauth2) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>('script[data-google-identity-services="true"]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error('Google sign-in script failed to load.')), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.dataset.googleIdentityServices = 'true';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Google sign-in script failed to load.'));
+    document.head.appendChild(script);
+  });
+}
+
+function formatGoogleTokenResponseError(response: GoogleTokenResponse): string {
+  if (response.error_description) {
+    return `Google sign-in failed: ${response.error_description}`;
+  }
+  if (response.error) {
+    return `Google sign-in failed: ${response.error}`;
+  }
+  return 'Google sign-in failed before Firebase could exchange the token.';
+}
+
+function formatGooglePopupError(error: GoogleTokenError): string {
+  const type = String(error?.type || '').trim();
+  if (type === 'popup_failed_to_open') {
+    return 'Popup blocked. Allow popups for this site and try again.';
+  }
+  if (type === 'popup_closed') {
+    return 'Google sign-in cancelled.';
+  }
+  if (error?.message) {
+    return `Google sign-in failed: ${error.message}`;
+  }
+  return 'Google sign-in failed before the popup completed.';
 }
 
 function resolveApiUrl(path: string, runtime: RuntimeConfig | null): string {
@@ -148,21 +197,50 @@ export function useAppController(): AppController {
   const [realtimeStatus, setRealtimeStatus] = useState<'idle' | 'connecting' | 'connected' | 'reconnecting'>('idle');
 
   const authRef = useRef<Auth | null>(null);
-  const providerRef = useRef<GoogleAuthProvider | null>(null);
   const runtimeRef = useRef<RuntimeConfig | null>(null);
   const tokenRef = useRef('');
   const realtimeSocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const realtimeSessionRef = useRef(0);
+  const googleScriptPromiseRef = useRef<Promise<void> | null>(null);
 
   function ensureFirebaseAuth(config: RuntimeFirebaseConfig): boolean {
-    if (authRef.current && providerRef.current) return true;
+    if (authRef.current) return true;
     if (!config.apiKey || !config.projectId) return false;
     const firebaseApp = getApps().length ? getApp() : initializeApp(config);
     authRef.current = getAuth(firebaseApp);
-    providerRef.current = providerRef.current || new GoogleAuthProvider();
     return true;
+  }
+
+  async function getGoogleAccessToken(clientId: string): Promise<string> {
+    if (!googleScriptPromiseRef.current) {
+      googleScriptPromiseRef.current = loadGoogleIdentityScript();
+    }
+    await googleScriptPromiseRef.current;
+    if (!window.google?.accounts?.oauth2) {
+      throw new Error('Google sign-in script is unavailable.');
+    }
+    const googleAccounts = window.google.accounts;
+
+    return new Promise((resolve, reject) => {
+      const tokenClient = googleAccounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: 'openid email profile',
+        prompt: 'select_account',
+        callback: (response: GoogleTokenResponse) => {
+          if (response.error || !response.access_token) {
+            reject(new Error(formatGoogleTokenResponseError(response)));
+            return;
+          }
+          resolve(response.access_token);
+        },
+        error_callback: (error: GoogleTokenError) => {
+          reject(new Error(formatGooglePopupError(error)));
+        },
+      });
+      tokenClient.requestAccessToken({ prompt: 'select_account' });
+    });
   }
 
   async function getFreshToken(forceRefresh = false): Promise<string> {
@@ -1044,31 +1122,42 @@ export function useAppController(): AppController {
   }
 
   async function signInWithGoogle() {
-    if (!authRef.current || !providerRef.current) {
+    if (!authRef.current) {
       ensureFirebaseAuth(normalizeFirebaseConfig(runtimeRef.current?.firebase));
     }
-    if (!authRef.current || !providerRef.current) {
+    if (!authRef.current) {
       setLoginMessage('Authentication is still initializing. Please wait a moment and try again.');
       setStatus('Authentication is still initializing.');
+      return;
+    }
+    const googleClientId = String(runtimeRef.current?.googleClientId || FALLBACK_GOOGLE_CLIENT_ID || '').trim();
+    if (!googleClientId) {
+      const message = 'Google sign-in is not configured for this app.';
+      setLoginMessage(message);
+      setStatus(message);
       return;
     }
     setLoginMessage('Opening Google sign-in...');
     setStatus('Opening Google sign-in...');
     try {
-      await signInWithPopup(authRef.current, providerRef.current);
+      const accessToken = await getGoogleAccessToken(googleClientId);
+      setLoginMessage('Signing you in...');
+      setStatus('Signing you in...');
+      const credential = GoogleAuthProvider.credential(null, accessToken);
+      await signInWithCredential(authRef.current, credential);
     } catch (error) {
-      const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: string }).code || '') : '';
-      if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
-        const message = 'Popup blocked. Allow popups for this site and try Google sign-in again.';
+      const message = error instanceof Error ? error.message : 'Google sign-in failed.';
+      if (/cancelled/i.test(message)) {
         setLoginMessage(message);
         setStatus(message);
         return;
       }
-      if (code === 'auth/popup-closed-by-user') {
-        setLoginMessage('Google sign-in popup was closed.');
-        setStatus('Ready for Google sign-in.');
+      if (/popup blocked/i.test(message)) {
+        setLoginMessage(message);
+        setStatus(message);
         return;
       }
+      const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: string }).code || '') : '';
       if (code === 'auth/unauthorized-domain') {
         const host = window.location.hostname;
         const message = `Firebase Google sign-in is not authorized for ${host}. Add this domain in Firebase Auth > Settings > Authorized domains.`;
@@ -1151,6 +1240,7 @@ export function useAppController(): AppController {
         const fallbackRuntime: RuntimeConfig = {
           appName: runtimeRef.current?.appName || 'Email By Abhinaba Das',
           apiBaseUrl: window.location.origin,
+          googleClientId: runtimeRef.current?.googleClientId || FALLBACK_GOOGLE_CLIENT_ID,
           firebase: fallbackConfig,
         };
         if (!runtimeRef.current) {

@@ -36,6 +36,9 @@ function classifyStatus(status: string): { kind: 'ignore' | 'clear' | 'active' |
   if (/New mail arrived/i.test(value)) {
     return { kind: 'toast', tone: 'warning', duration: 3800 };
   }
+  if (/(blocked|cancelled|closed)/i.test(value)) {
+    return { kind: 'toast', tone: 'warning', duration: 3600 };
+  }
   if (/(failed|error|cannot|not allowed|invalid|missing|unsupported|denied|unavailable|not found)/i.test(value)) {
     return { kind: 'toast', tone: 'error', duration: 4600 };
   }

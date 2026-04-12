@@ -14,6 +14,7 @@ export interface RuntimeFirebaseConfig {
 
 export interface RuntimeConfig {
   firebase: RuntimeFirebaseConfig;
+  googleClientId: string;
   appName?: string;
   apiBaseUrl?: string;
 }

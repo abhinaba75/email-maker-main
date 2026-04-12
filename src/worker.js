@@ -133,6 +133,7 @@ function buildRuntimeConfig(request, env) {
   return {
     appName: env.APP_NAME || 'Email By Abhinaba Das',
     apiBaseUrl: appOrigin,
+    googleClientId: String(env.PUBLIC_GOOGLE_CLIENT_ID || '').trim(),
     firebase: {
       apiKey: env.PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || '',
       authDomain: env.FIREBASE_AUTH_DOMAIN || env.PUBLIC_FIREBASE_AUTH_DOMAIN || 'email-maker-forge-ad61.firebaseapp.com',
@@ -245,7 +246,7 @@ function withSecurityHeaders(request, env, response) {
         "img-src 'self' data: blob: https:",
         "style-src 'self' 'unsafe-inline'",
         "font-src 'self' data: https:",
-        "script-src 'self' https://www.gstatic.com",
+        "script-src 'self' https://www.gstatic.com https://accounts.google.com",
         "connect-src 'self' https: wss:",
         ["frame-src 'self'", 'https://accounts.google.com', firebaseAuthOrigin, 'https://*.firebaseapp.com', 'https://*.web.app'].filter(Boolean).join(' '),
         ["form-action 'self'", 'https://accounts.google.com', firebaseAuthOrigin, 'https://*.firebaseapp.com', 'https://*.web.app'].filter(Boolean).join(' '),
