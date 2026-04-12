@@ -141,7 +141,7 @@ function buildRuntimeConfig(request, env) {
     apiBaseUrl: appOrigin,
     firebase: {
       apiKey: env.PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || '',
-      authDomain: appHost || env.PUBLIC_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || '',
+      authDomain: env.PUBLIC_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || 'email-maker-forge-ad61.firebaseapp.com',
       projectId: env.PUBLIC_FIREBASE_PROJECT_ID || env.FIREBASE_PROJECT_ID || '',
       appId: env.PUBLIC_FIREBASE_APP_ID || env.FIREBASE_APP_ID || '',
       messagingSenderId: env.PUBLIC_FIREBASE_MESSAGING_SENDER_ID || env.FIREBASE_MESSAGING_SENDER_ID || '',
