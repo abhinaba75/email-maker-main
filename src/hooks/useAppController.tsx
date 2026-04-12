@@ -5,7 +5,6 @@ import {
   getAuth,
   onIdTokenChanged,
   signInWithPopup,
-  signInWithRedirect,
   signOut as firebaseSignOut,
   type Auth,
   type User,
@@ -1060,9 +1059,9 @@ export function useAppController(): AppController {
     } catch (error) {
       const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: string }).code || '') : '';
       if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
-        setLoginMessage('Popup blocked. Redirecting to Google sign-in...');
-        setStatus('Redirecting to Google sign-in...');
-        await signInWithRedirect(authRef.current, providerRef.current);
+        const message = 'Popup blocked. Allow popups for this site and try Google sign-in again.';
+        setLoginMessage(message);
+        setStatus(message);
         return;
       }
       if (code === 'auth/popup-closed-by-user') {

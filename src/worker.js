@@ -130,18 +130,12 @@ function resolveApiBaseUrl(request, env) {
 
 function buildRuntimeConfig(request, env) {
   const appOrigin = resolveApiBaseUrl(request, env);
-  let appHost = '';
-  try {
-    appHost = new URL(appOrigin).host;
-  } catch {
-    appHost = '';
-  }
   return {
     appName: env.APP_NAME || 'Email By Abhinaba Das',
     apiBaseUrl: appOrigin,
     firebase: {
       apiKey: env.PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || '',
-      authDomain: env.PUBLIC_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || 'email-maker-forge-ad61.firebaseapp.com',
+      authDomain: env.FIREBASE_AUTH_DOMAIN || env.PUBLIC_FIREBASE_AUTH_DOMAIN || 'email-maker-forge-ad61.firebaseapp.com',
       projectId: env.PUBLIC_FIREBASE_PROJECT_ID || env.FIREBASE_PROJECT_ID || '',
       appId: env.PUBLIC_FIREBASE_APP_ID || env.FIREBASE_APP_ID || '',
       messagingSenderId: env.PUBLIC_FIREBASE_MESSAGING_SENDER_ID || env.FIREBASE_MESSAGING_SENDER_ID || '',
