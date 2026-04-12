@@ -34,3 +34,12 @@ Cloudflare Worker mail console with:
 - Configure `ALLOWED_ORIGINS` so only your Cloudflare production origin and local development origins can call the Worker API cross-origin.
 - Wrangler now serves the built frontend from `dist`, while Vite owns the React client source under [`src`](C:/Users/abhin/Downloads/Programming/email-maker/email-maker/src).
 - Raw `.eml` retention should be enforced with an R2 lifecycle rule at the bucket level, not inside Worker code.
+
+## GitHub auto-deploy
+
+- Pull requests run [`.github/workflows/ci.yml`](C:/Users/abhin/Downloads/Programming/email-maker/email-maker/.github/workflows/ci.yml).
+- Pushes to `main` run [`.github/workflows/deploy.yml`](C:/Users/abhin/Downloads/Programming/email-maker/email-maker/.github/workflows/deploy.yml), which builds the frontend, runs tests, and deploys `alias-forge-2000` with Wrangler.
+- Add these GitHub repository secrets before relying on automatic deploys:
+  - `CLOUDFLARE_API_TOKEN`
+  - `CLOUDFLARE_ACCOUNT_ID`
+- The API token must have permission to deploy the Worker and update its linked resources in your Cloudflare account. Create it from Cloudflare, then store it in the GitHub repository secrets UI.

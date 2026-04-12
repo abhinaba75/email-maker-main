@@ -151,8 +151,8 @@ function buildRuntimeConfig(request, env) {
 
 function getFirebaseProjectAuthOrigin(env) {
   const firebaseAuthDomain = String(
-    env.PUBLIC_FIREBASE_AUTH_DOMAIN
-    || env.FIREBASE_AUTH_DOMAIN
+    env.FIREBASE_AUTH_DOMAIN
+    || env.PUBLIC_FIREBASE_AUTH_DOMAIN
     || 'email-maker-forge-ad61.firebaseapp.com',
   ).trim();
   return firebaseAuthDomain ? `https://${firebaseAuthDomain}` : null;
