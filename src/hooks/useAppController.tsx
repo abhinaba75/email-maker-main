@@ -5,6 +5,7 @@ import {
   getAuth,
   onIdTokenChanged,
   signInWithPopup,
+  signInWithRedirect,
   signOut as firebaseSignOut,
   type Auth,
   type User,
@@ -972,7 +973,32 @@ export function useAppController(): AppController {
   async function signInWithGoogle() {
     if (!authRef.current || !providerRef.current) return;
     setLoginMessage('Opening Google sign-in...');
-    await signInWithPopup(authRef.current, providerRef.current);
+    setStatus('Opening Google sign-in...');
+    try {
+      await signInWithPopup(authRef.current, providerRef.current);
+    } catch (error) {
+      const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: string }).code || '') : '';
+      if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
+        setLoginMessage('Popup blocked. Redirecting to Google sign-in...');
+        setStatus('Redirecting to Google sign-in...');
+        await signInWithRedirect(authRef.current, providerRef.current);
+        return;
+      }
+      if (code === 'auth/popup-closed-by-user') {
+        setLoginMessage('Google sign-in popup was closed.');
+        setStatus('Ready for Google sign-in.');
+        return;
+      }
+      if (code === 'auth/unauthorized-domain') {
+        const host = window.location.hostname;
+        const message = `Firebase Google sign-in is not authorized for ${host}. Add this domain in Firebase Auth > Settings > Authorized domains.`;
+        setLoginMessage(message);
+        setStatus(message);
+        return;
+      }
+      showError(error);
+      throw error;
+    }
   }
 
   async function signOutAction() {
@@ -1016,12 +1042,14 @@ export function useAppController(): AppController {
               setCursors(EMPTY_CURSORS);
               disconnectRealtime();
               setLoginMessage('Sign in to continue.');
+              setStatus('Ready for Google sign-in.');
               setBooting(false);
               return;
             }
 
             tokenRef.current = await firebaseUser.getIdToken();
             setBooting(false);
+            setStatus('Loading workspace...');
             await refreshBootstrap();
             setUser((current) => current ? {
               ...current,
@@ -1034,6 +1062,7 @@ export function useAppController(): AppController {
           }
         });
 
+        setStatus('Ready for Google sign-in.');
         setBooting(false);
       } catch (error) {
         showError(error);
