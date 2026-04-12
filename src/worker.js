@@ -159,7 +159,7 @@ function getFirebaseProjectAuthOrigin(env) {
 }
 
 function shouldProxyFirebaseHelper(url) {
-  return url.pathname.startsWith('/__/auth/') || url.pathname === '/__/firebase/init.json';
+  return url.pathname.startsWith('/__/auth/');
 }
 
 async function proxyFirebaseHelper(request, env, url) {
@@ -169,6 +169,17 @@ async function proxyFirebaseHelper(request, env, url) {
   }
   const targetUrl = new URL(`${firebaseAuthOrigin}${url.pathname}${url.search}`);
   return fetch(new Request(targetUrl.toString(), request));
+}
+
+function buildFirebaseInitConfig(request, env) {
+  const runtimeConfig = buildRuntimeConfig(request, env);
+  return {
+    apiKey: runtimeConfig.firebase.apiKey || '',
+    authDomain: runtimeConfig.firebase.authDomain || '',
+    projectId: runtimeConfig.firebase.projectId || '',
+    appId: runtimeConfig.firebase.appId || '',
+    messagingSenderId: runtimeConfig.firebase.messagingSenderId || '',
+  };
 }
 
 function getAllowedOrigins(env, requestOrigin) {
@@ -2187,6 +2198,9 @@ async function processScheduledIngestRetries(env) {
 export default {
   async fetch(request, env) {
     const url = parseUrl(request);
+    if (url.pathname === '/__/firebase/init.json') {
+      return json(buildFirebaseInitConfig(request, env));
+    }
     if (shouldProxyFirebaseHelper(url)) {
       return proxyFirebaseHelper(request, env, url);
     }
