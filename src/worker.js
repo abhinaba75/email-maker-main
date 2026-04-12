@@ -200,6 +200,12 @@ function withSecurityHeaders(request, env, response) {
   const headers = new Headers(response.headers);
   const contentType = headers.get('Content-Type') || '';
   if (contentType.includes('text/html')) {
+    const firebaseAuthDomain = String(
+      env.PUBLIC_FIREBASE_AUTH_DOMAIN
+      || env.FIREBASE_AUTH_DOMAIN
+      || 'email-maker-forge-ad61.firebaseapp.com',
+    ).trim();
+    const firebaseAuthOrigin = firebaseAuthDomain ? `https://${firebaseAuthDomain}` : null;
     headers.set(
       'Content-Security-Policy',
       [
@@ -212,8 +218,8 @@ function withSecurityHeaders(request, env, response) {
         "font-src 'self' data: https:",
         "script-src 'self' https://www.gstatic.com",
         "connect-src 'self' https: wss:",
-        "frame-src https://accounts.google.com",
-        "form-action 'self' https://accounts.google.com",
+        ["frame-src", 'https://accounts.google.com', firebaseAuthOrigin, 'https://*.firebaseapp.com', 'https://*.web.app'].filter(Boolean).join(' '),
+        ["form-action 'self'", 'https://accounts.google.com', firebaseAuthOrigin, 'https://*.firebaseapp.com', 'https://*.web.app'].filter(Boolean).join(' '),
       ].join('; '),
     );
     headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
