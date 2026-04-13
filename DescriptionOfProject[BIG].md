@@ -7079,3 +7079,945 @@ That would complete the picture between:
 
 Part 6 explained how the browser thinks and behaves.
 Part 7 should explain the helper logic that makes that behavior practical.
+
+---
+
+## Part 7: Utility Layer, Shared Helpers, HTML Handling, Formatting, and AI Adaptation
+
+Part 7 explains the helper layer.
+
+This is the part of the codebase that many people skip when they first read the project, but it is one of the most important layers for long-term maintainability.
+
+The utility layer is where the project turns raw low-level input into application-friendly shapes.
+
+It sits between:
+
+- raw provider responses
+- raw database rows
+- raw HTML snippets
+- raw user-entered address strings
+- the frontend components
+- the backend request handlers
+
+The most important files for this section are:
+
+- `src/lib/html.ts`
+- `src/lib/format.ts`
+- `src/lib/ai.js`
+- `src/lib/providers/gemini.js`
+- `src/lib/providers/groq.js`
+
+These files matter because they reduce duplication, normalize inconsistent inputs, and make the rest of the codebase much easier to reason about.
+
+Without them, many complex behaviors would be scattered across:
+
+- React components
+- controller logic
+- Worker route handlers
+- provider-specific branches
+
+Instead, the project keeps most of that adaptation work in focused helper modules.
+
+---
+
+## 202. The Utility Layer Is the Translation Layer
+
+The cleanest way to understand the helper modules is:
+
+- `format.ts` translates data structures and display-friendly values
+- `html.ts` translates between text, sanitized HTML, preview documents, and signature-aware markup
+- `ai.js` translates product intentions into model-ready prompts and translates model output back into structured results
+- provider adapters translate generic AI requests into vendor-specific HTTP calls
+
+This means the utility layer is not “miscellaneous code.”
+
+It is the project’s translation layer.
+
+That is the reason it deserves documentation on the same level as the database or controller.
+
+---
+
+## 203. `src/lib/format.ts`: Display and Normalization Helpers
+
+`format.ts` is one of the most cross-cutting frontend helper modules.
+
+It provides small, explicit transformation functions that many other parts of the app depend on.
+
+Its responsibilities include:
+
+- safe HTML escaping for text fragments
+- human-readable date formatting
+- address formatting and parsing
+- finding selected records inside cached collections
+- sending-domain and sending-mailbox selection logic
+- send-capability labeling
+- draft normalization
+- alert summary construction
+
+The important thing about `format.ts` is not that any one function is especially complicated.
+
+The important thing is that it gives the rest of the app a single place to define “how this project wants to interpret and present data.”
+
+---
+
+## 204. `escapeHtml()` and Why It Lives in `format.ts`
+
+`escapeHtml(value)` is the lowest-level function in this module, but it matters a lot.
+
+It escapes:
+
+- `&`
+- `<`
+- `>`
+- `"`
+- `'`
+
+This helper is then used in other parts of the app, especially inside `html.ts`, when plain text is turned into HTML-safe markup.
+
+This is a good example of utility layering:
+
+- `format.ts` owns the atomic safe string helper
+- `html.ts` builds richer markup behavior on top of it
+
+That dependency direction is sensible because escaping is more primitive than HTML document construction.
+
+---
+
+## 205. `formatDateTime()`: Stable Human-Readable Timestamps
+
+`formatDateTime(value)` uses `Intl.DateTimeFormat` to render:
+
+- month
+- day
+- year
+- hour
+- minute
+
+This function matters because timestamps appear almost everywhere in the UI:
+
+- thread rows
+- thread preview metadata
+- drafts
+- domain diagnostics
+- control-plane tables
+
+By centralizing date formatting, the project avoids a common frontend problem where every screen renders time slightly differently.
+
+If a future engineer wants to change timestamp presentation, this is one of the first places to look.
+
+---
+
+## 206. Address Helpers: Parsing and Displaying Email Identities
+
+Two important helpers in `format.ts` are:
+
+- `formatAddresses()`
+- `parseInlineAddressList()`
+
+### `formatAddresses()`
+
+This helper takes structured `AddressEntry[]` values and formats them as readable strings such as:
+
+- `someone@example.com`
+- `Name <someone@example.com>`
+
+This is used in:
+
+- thread preview metadata
+- reply quoting
+- any place where structured address objects must become readable UI text
+
+### `parseInlineAddressList()`
+
+This helper does the opposite.
+
+It takes user-entered comma-separated text and turns it into `AddressEntry[]`.
+
+It supports both:
+
+- plain email addresses
+- `Name <email>` syntax
+
+This matters for compose because the UI exposes recipient editing as inline text, but the controller and backend prefer structured address objects.
+
+So this helper is one of the bridges between casual user input and structured application state.
+
+---
+
+## 207. Collection Lookups and Why They Are Centralized
+
+Several helpers in `format.ts` simply retrieve records from cached arrays:
+
+- `getConnection()`
+- `getDomain()`
+- `getMailbox()`
+- `getSendingDomain()`
+- `getSelectedSendingMailboxes()`
+- `getDefaultMailbox()`
+
+These are simple, but they matter because the app frequently works with fully loaded arrays inside controller state rather than normalizing everything into a client-side entity store.
+
+That design makes a few small lookup helpers very valuable.
+
+Instead of repeating:
+
+- `domains.find(...)`
+- `mailboxes.find(...)`
+- “pick the default sender or first mailbox”
+
+throughout the codebase, these helpers encode those conventions once.
+
+This reduces subtle inconsistency in a project that already has many moving pieces.
+
+---
+
+## 208. Sending Summary and Alert Summary Helpers
+
+Two particularly important summary helpers in `format.ts` are:
+
+- `getSendingSummaryMessage()`
+- `buildAlertSummary()`
+
+### `getSendingSummaryMessage()`
+
+This helper converts sending-domain control-plane state into a human sentence the UI can show.
+
+It handles cases like:
+
+- send-enabled domain exists
+- selected domain exists but sending is degraded
+- no valid sending domain exists
+
+This is important because raw backend state like:
+
+- `send_enabled`
+- `send_unavailable`
+- selected domain IDs
+- routing errors
+
+is not user-ready on its own.
+
+The helper turns infrastructure truth into a user-meaningful explanation.
+
+### `buildAlertSummary()`
+
+This helper compresses alert counts into compact visible text such as:
+
+- routing issues need repair
+- inbound messages are quarantined
+
+That string is what appears in the alert banner slot in the shell.
+
+This is a small function with outsized UX importance because it turns control-plane health into a concise summary.
+
+---
+
+## 209. `normalizeDraftRecord()`: One Draft Shape for the Whole Frontend
+
+Draft data can come from different places:
+
+- API rows returned as `DraftRecord`
+- locally constructed compose seeds
+- partial draft-like objects passed through reply or forward flows
+
+`normalizeDraftRecord()` exists so the rest of the compose system can work with a single consistent shape: `ComposeDraft`.
+
+It maps fields like:
+
+- `domain_id` -> `domainId`
+- `mailbox_id` -> `mailboxId`
+- `thread_id` -> `threadId`
+- `from_address` -> `fromAddress`
+- `to_json` -> `to`
+- `cc_json` -> `cc`
+- `bcc_json` -> `bcc`
+- `text_body` -> `textBody`
+- `html_body` -> `htmlBody`
+- `attachment_json` -> `attachments`
+
+It also fills editor defaults such as:
+
+- `editorMode`
+- `aiProvider`
+- `aiModel`
+- `aiTone`
+- `aiPrompt`
+- `templateId`
+
+This function is one of the keys to the compose modal’s simplicity.
+
+Because all incoming draft-like payloads are normalized early, the modal can treat them as one type of object.
+
+---
+
+## 210. `src/lib/html.ts`: The HTML Safety and Transformation Layer
+
+`html.ts` is one of the most important helper modules in the whole frontend.
+
+It is responsible for:
+
+- converting text into editable compose HTML
+- stripping HTML back into plain text
+- sanitizing imported HTML fragments
+- building preview documents for iframe rendering
+- appending signatures safely
+- serializing visual HTML back into full document markup
+
+This module matters because the product is not only a text email client.
+
+It explicitly supports:
+
+- rich compose
+- direct HTML compose
+- editable rendered HTML
+- HTML templates
+- HTML signatures
+- stored HTML inbound messages
+
+Without a careful helper layer, those features would be fragile and unsafe.
+
+---
+
+## 211. `stripHtmlToText()`: HTML-to-Text Fallback Logic
+
+`stripHtmlToText(html)` builds a temporary DOM container, assigns the provided HTML to `innerHTML`, reads `innerText`, replaces non-breaking spaces, and trims the result.
+
+That is intentionally simple.
+
+Its job is not to produce a perfect MIME plain-text alternate.
+
+Its job is to provide a clean, useful text representation when the app needs:
+
+- a draft text body derived from rich or HTML input
+- a fallback text value after visual edits
+- text comparisons or summaries
+
+This function helps keep text and HTML bodies reasonably in sync without requiring a full HTML-to-text rendering engine.
+
+---
+
+## 212. `textToComposeHtml()`: Turning Plain Text Into Editable Rich HTML
+
+`textToComposeHtml(text)` is the inverse direction.
+
+It takes plain text and turns it into paragraph-based HTML for the editor.
+
+Important behaviors:
+
+- normalizes Windows line endings to `\n`
+- returns `<p><br></p>` for empty content
+- splits double newlines into paragraphs
+- preserves line breaks inside a paragraph with `<br>`
+- preserves meaningful spaces via `&nbsp;`
+
+This matters because a large part of the compose experience depends on moving fluidly between:
+
+- plaintext thinking
+- rich editing
+- HTML editing
+
+This helper makes that transition deterministic instead of ad hoc.
+
+---
+
+## 213. `sanitizeEmailPreviewFragment()`: The Core HTML Sanitizer
+
+`sanitizeEmailPreviewFragment(html)` is one of the most safety-critical frontend helpers.
+
+Its job is to take arbitrary HTML and reduce it to a form safe enough for preview and editing.
+
+Important sanitization behavior:
+
+- parses the markup with `DOMParser`
+- removes:
+  - `script`
+  - `iframe`
+  - `object`
+  - `embed`
+  - `form`
+  - `input`
+  - `button`
+  - `textarea`
+  - `select`
+- removes inline event handlers such as `onclick`
+- removes JavaScript URLs from attributes such as:
+  - `href`
+  - `src`
+  - `xlink:href`
+  - `action`
+  - `formaction`
+- normalizes anchor tags so they open in a new tab with:
+  - `target="_blank"`
+  - `rel="noopener noreferrer"`
+- extracts `<style>` tags from the document head and returns them separately
+
+The returned structure is:
+
+- `styles`
+- `body`
+
+This split is extremely useful because the app often needs:
+
+- clean body markup for editing or embedding
+- extracted styles for visual rendering or HTML serialization
+
+In practice, this helper is what allows the app to accept user-supplied or AI-generated HTML without blindly trusting it.
+
+---
+
+## 214. HTML Sanitization Flowchart
+
+The sanitization pipeline is worth diagramming because it is easy to underestimate how many later features depend on it.
+
+```mermaid
+flowchart TD
+  A["Raw HTML enters app"] --> B["sanitizeEmailPreviewFragment()"]
+  B --> C["Parse with DOMParser"]
+  C --> D["Remove unsafe nodes<br/>script, iframe, form, input, button, etc."]
+  D --> E["Remove inline event handlers"]
+  E --> F["Remove javascript: URLs"]
+  F --> G["Normalize anchor target and rel"]
+  G --> H["Extract <style> tags from head"]
+  H --> I["Return SanitizedFragment { styles, body }"]
+  I --> J["Used by HTML preview"]
+  I --> K["Used by visual HTML editing"]
+  I --> L["Used by signature insertion"]
+  I --> M["Used by HTML document serialization"]
+```
+
+This is one of the clearest examples of a helper function serving as shared infrastructure inside the frontend itself.
+
+---
+
+## 215. `buildEmailPreviewDocument()`: Adapting Arbitrary Email HTML to the Reading Surface
+
+This helper takes sanitized fragment output and wraps it in a full preview document.
+
+Its responsibilities are larger than the name first suggests.
+
+It:
+
+- injects a proper HTML document shell
+- includes the extracted `<style>` tags
+- sets a `<base target="_blank">`
+- injects preview-specific CSS
+- wraps the body inside a `.preview-root`
+
+The injected CSS intentionally forces email markup to behave well inside the app’s preview pane.
+
+Examples of preview adaptation:
+
+- `html, body` forced to full width
+- top-level containers forced to `width: 100%`
+- tables forced to `max-width: 100%`
+- images forced to scale down correctly
+- known fixed-width inline styles such as `width:600px` forced back into responsive bounds
+- `blockquote` and `pre` given readable defaults
+
+This helper is one of the reasons imported or inbound HTML can be read comfortably in the app even if the original markup assumed a narrower email client canvas.
+
+That is not the same as mutating the stored source HTML.
+
+It is preview-specific adaptation.
+
+That distinction is important.
+
+---
+
+## 216. Signature Helpers: `normalizeSignatureFragment()`, `normalizeMarkupForCompare()`, and `appendSignatureToDocument()`
+
+The signature pathway in `html.ts` is more careful than it might first appear.
+
+### `normalizeSignatureFragment()`
+
+This simply routes signatures through the same sanitization system used for other HTML fragments.
+
+That means signatures are not trusted just because they were entered by the mailbox owner.
+
+### `normalizeMarkupForCompare()`
+
+This helper strips spacing differences, collapses whitespace, and lowercases markup so the app can compare HTML blocks semantically rather than literally.
+
+That matters because the same signature might exist in slightly different formatting forms.
+
+### `appendSignatureToDocument()`
+
+This is the real orchestration helper.
+
+It:
+
+- sanitizes current draft HTML
+- sanitizes signature HTML
+- removes prior signature blocks marked with `data-signature-block="true"`
+- removes duplicate signature-looking blocks when the normalized markup matches
+- appends the new signature block
+
+This is the helper that prevents repeated signature duplication in the compose experience.
+
+That may sound minor, but repeated signature duplication is one of the fastest ways for a mail composer to feel broken.
+
+So this function solves a very practical product problem.
+
+---
+
+## 217. `serializeVisualHtml()`: Closing the Loop
+
+When the user edits HTML visually, the app sometimes needs to reconstruct a complete HTML document again.
+
+`serializeVisualHtml(styles, body)` does that final step.
+
+It creates:
+
+- a full document shell
+- reinserts styles
+- reinserts body content
+
+This is what closes the round-trip between:
+
+- imported HTML
+- sanitized visual editing
+- stored output HTML
+
+Without this helper, the app would have a much harder time preserving style blocks after visual editing.
+
+---
+
+## 218. Why `html.ts` Matters More Than It Looks
+
+The easiest mistake when reading this project is to think `html.ts` is just presentation glue.
+
+It is not.
+
+It is one of the modules that makes the product’s HTML-heavy feature set actually feasible.
+
+It is performing four different jobs at once:
+
+- safety
+- normalization
+- preview adaptation
+- editor round-trip support
+
+That combination is why it deserves serious attention in the knowledgebase.
+
+---
+
+## 219. `src/lib/ai.js`: Product-Level AI Mediation
+
+`ai.js` is not a provider adapter.
+
+That distinction matters.
+
+Its role is to define the product’s AI semantics.
+
+It decides:
+
+- what actions the app supports
+- what tones exist
+- what the prompt structure should be
+- what JSON shape the model should return
+- how model output should be parsed back into application state
+
+Provider adapters then execute the request.
+
+So `ai.js` is the product-level mediation layer for AI.
+
+---
+
+## 220. Supported AI Actions and What They Mean
+
+The `ACTIONS` object defines the app’s supported transformations:
+
+- `compose`
+- `rewrite`
+- `shorten`
+- `expand`
+- `formalize`
+- `casualize`
+- `proofread`
+- `summarize`
+
+Each action includes:
+
+- `label`
+- `selectionMode`
+- `instruction`
+
+This matters because the app does not expose raw freeform prompting alone.
+
+It exposes structured editorial operations.
+
+That is a much stronger product design than simply embedding an LLM textbox and hoping the user understands how to prompt it.
+
+The app says, in effect:
+
+- “compose a draft”
+- “rewrite this selection”
+- “shorten this text”
+- “make this more formal”
+
+That is easier to use and easier to maintain.
+
+---
+
+## 221. Tone Presets as Product Policy
+
+The `TONE_PRESETS` object is similar.
+
+It defines supported tones such as:
+
+- `professional`
+- `friendly`
+- `formal`
+- `concise`
+- `persuasive`
+- `empathetic`
+- `confident`
+- `upbeat`
+
+Each preset supplies:
+
+- label
+- instruction
+
+This means tone is not a loose UI label.
+
+It is part of the prompt contract sent to the model.
+
+That matters because it makes tone selection reproducible and auditable.
+
+If future behavior feels wrong, a maintainer can inspect the exact tone guidance string rather than guessing what “friendly” was supposed to mean.
+
+---
+
+## 222. `buildAiAssistRequest()`: The Most Important AI Helper
+
+`buildAiAssistRequest()` is the core request-shaping function.
+
+It takes product-level inputs such as:
+
+- action
+- prompt
+- tone
+- output mode
+- subject
+- text body
+- selection text
+- recipients
+
+and turns them into a normalized request object containing:
+
+- normalized action
+- normalized tone
+- normalized output mode
+- whether selection mode is active
+- a JSON schema for response validation
+- a system instruction
+- a final prompt string
+
+This is extremely important.
+
+It means the rest of the app does not have to reinvent how to prompt Gemini or Llama for every action.
+
+The product has one canonical prompt construction pathway.
+
+---
+
+## 223. HTML Email Generation Guidance in `ai.js`
+
+The HTML email path in `buildAiAssistRequest()` contains a stronger instruction set than the plain-text path.
+
+It explicitly asks for:
+
+- visually polished modern email output
+- table-based structure
+- inline styles
+- strong hierarchy
+- spacing
+- responsive max-width behavior
+- no scripts or forms
+- complete ready-to-send HTML in `htmlBody`
+- plain-text fallback in `textBody`
+
+This is significant because the app is not satisfied with “some HTML.”
+
+It is explicitly trying to coax the model into generating email-safe, product-usable markup.
+
+That makes `ai.js` a key part of the app’s HTML email quality story.
+
+The quality of generated HTML is not just a provider problem.
+
+It is a prompt-contract problem, and this module owns that contract.
+
+---
+
+## 224. `parseAiAssistResult()`: Making Model Output Safe for the App
+
+Model output is messy by nature.
+
+`parseAiAssistResult()` exists to make it usable.
+
+It does all of the following:
+
+- strips markdown code fences
+- tries direct JSON parsing
+- tries extracting the outermost JSON object if the response wrapped it in prose
+- supports selection-mode replacement parsing
+- supports full-draft parsing
+- derives text fallback from HTML when needed
+- normalizes final `subject`, `textBody`, `htmlBody`, or `replacementText`
+
+This function is critical because models often fail in boring, inconsistent ways:
+
+- adding markdown fences
+- wrapping JSON in explanation text
+- returning HTML without text
+- returning text in the wrong field
+
+The parser is designed to absorb those inconsistencies so the rest of the app does not need provider-specific cleanup logic.
+
+That is one of the most important examples of robustness engineering in the codebase.
+
+---
+
+## 225. AI Request/Response Flowchart
+
+The AI pipeline is another place where a diagram helps.
+
+```mermaid
+flowchart TD
+  A["Compose modal gathers action, tone, prompt, bodies, recipients"] --> B["Controller calls /api/ai/assist"]
+  B --> C["buildAiAssistRequest()"]
+  C --> D["Normalize action and tone"]
+  D --> E["Choose output mode<br/>plain_text or html_email"]
+  E --> F["Build response schema"]
+  F --> G["Build system instruction + final prompt"]
+  G --> H{"Provider?"}
+  H -- "Gemini" --> I["generateGeminiContent()"]
+  H -- "Groq / Llama" --> J["generateGroqChat()"]
+  I --> K["Raw provider text"]
+  J --> K
+  K --> L["parseAiAssistResult()"]
+  L --> M["Structured subject/text/html or replacementText"]
+  M --> N["Controller returns result to compose modal"]
+  N --> O["Draft form updates and notification shows completion"]
+```
+
+This is the AI pipeline in a form a new engineer can hold in their head.
+
+---
+
+## 226. Provider Adapters: Why They Are Small on Purpose
+
+The provider adapters in:
+
+- `src/lib/providers/gemini.js`
+- `src/lib/providers/groq.js`
+
+are intentionally narrow.
+
+They do not know about:
+
+- compose modal state
+- UI actions
+- alert banners
+- draft semantics
+- thread data
+
+They only know how to:
+
+- make authenticated HTTP requests
+- validate response status
+- extract usable response text
+
+This is good separation of concerns.
+
+It means vendor-specific code stays small and replaceable.
+
+---
+
+## 227. `gemini.js`: Structured Output With Fallback
+
+The Gemini adapter does several important things:
+
+- defines API root
+- constrains model names through `normalizeModelName()`
+- verifies keys by listing models
+- extracts text from Gemini candidate parts
+- builds meaningful empty-response error messages
+- tries structured JSON output first
+- falls back to plain text mode if structured mode fails
+
+That fallback behavior is especially important.
+
+Gemini can be unreliable in structured output mode depending on request shape and provider behavior.
+
+The adapter therefore tries:
+
+1. `application/json` response mode with schema
+2. if that fails, `text/plain`
+
+This is a very pragmatic design.
+
+The product still prefers structured machine-readable output, but it does not fail immediately if Gemini becomes brittle in schema mode.
+
+That is robust engineering rather than provider idealism.
+
+---
+
+## 228. `groq.js`: OpenAI-Style Chat Completion Adapter
+
+The Groq adapter is simpler because the endpoint behaves like a chat-completions API.
+
+Its responsibilities are:
+
+- define the API root
+- verify the API key by listing models
+- send:
+  - optional system instruction
+  - user prompt
+- extract response content from `choices[0].message.content`
+
+The model is currently fixed through `GROQ_EMAIL_MODEL`.
+
+That means the app is not presenting Groq as an open-ended model laboratory.
+
+It is treating Groq as a reliable operational provider for a chosen email-oriented model profile.
+
+This is consistent with the product’s overall style: constrain where that improves reliability.
+
+---
+
+## 229. Why the AI Stack Is Layered Correctly
+
+The AI stack can be summarized as three layers:
+
+### Product layer
+
+`src/lib/ai.js`
+
+Defines:
+
+- actions
+- tones
+- prompt structure
+- schemas
+- output parsing
+
+### Provider layer
+
+`src/lib/providers/gemini.js`
+`src/lib/providers/groq.js`
+
+Defines:
+
+- HTTP request shape
+- auth header format
+- provider-specific extraction
+- provider-specific failure behavior
+
+### Orchestration layer
+
+Worker route handlers and frontend controller methods
+
+Define:
+
+- when AI is called
+- which provider is selected
+- how status messages appear
+- where results are inserted back into the draft
+
+This is a strong architecture because it prevents provider concerns from polluting product semantics and prevents UI concerns from polluting provider clients.
+
+---
+
+## 230. Cross-Cutting Utility Principle in This Project
+
+The utility layer across `format.ts`, `html.ts`, and `ai.js` follows a shared design principle:
+
+- normalize early
+- centralize interpretation
+- keep components and route handlers thin
+
+Examples:
+
+- addresses are parsed once, not differently in every form
+- drafts are normalized into one compose shape
+- HTML is sanitized before many downstream uses
+- AI prompt design is centralized instead of copied per feature
+
+This principle is one of the reasons the project stays coherent despite spanning:
+
+- auth
+- inbox UI
+- HTML email tooling
+- AI composition
+- domain routing infrastructure
+- cloud provider integrations
+
+---
+
+## 231. The Utility Layer as a Stability Multiplier
+
+A useful way to think about these helpers is:
+
+they multiply stability.
+
+Each utility function removes one category of repeated uncertainty:
+
+- how to display times
+- how to parse recipient strings
+- how to normalize drafts
+- how to sanitize imported HTML
+- how to build a preview document
+- how to compare signatures
+- how to prompt a model
+- how to parse model output
+
+Individually, these may look like small functions.
+
+Collectively, they make the entire system more deterministic.
+
+That is why this layer deserves detailed documentation in a project knowledgebase.
+
+---
+
+## 232. Recommended Reading Order for the Utility Layer
+
+If someone wants to understand the helper layer deeply, the best order is:
+
+1. `src/lib/format.ts`
+   - learn data normalization and display helpers
+2. `src/lib/html.ts`
+   - learn HTML safety, transformation, and editor support
+3. `src/lib/ai.js`
+   - learn AI product semantics
+4. `src/lib/providers/gemini.js`
+   - learn Gemini transport behavior
+5. `src/lib/providers/groq.js`
+   - learn Groq transport behavior
+
+That order moves from generic helpers toward vendor-specific behavior.
+
+---
+
+## 233. What Part 8 Should Cover Next
+
+The next strong knowledgebase section would be a deployment-and-operations section that ties the whole system together in practical operating terms.
+
+Part 8 should probably cover:
+
+- `wrangler.jsonc` in full
+- Cloudflare bindings and what each one is used for
+- custom domain binding
+- GitHub Actions deployment flow
+- required secrets and vars
+- Firebase and Google auth external configuration
+- Cloudflare Email Routing operational prerequisites
+- R2 lifecycle policy
+- observability and logs
+- what must exist outside the repo for the system to function
+
+That would complete the “how this project runs in the real world” layer of the knowledgebase.
+
+Part 7 explained the translation and helper layer.
+Part 8 should explain the real deployment and operational environment around the code.
