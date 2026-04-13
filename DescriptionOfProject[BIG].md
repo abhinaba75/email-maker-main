@@ -1965,3 +1965,992 @@ The next useful section is the API and request flow layer:
 - scheduled maintenance and retry flow
 
 That next section will connect this schema to actual request/response behavior.
+
+---
+
+## Part 3: API Surface and Request / Response Flow
+
+Part 3 explains how the running system behaves.
+
+Part 2 described the stored data model. This section describes how data moves through the application:
+
+- how the browser boots
+- how authentication works
+- how API calls are made
+- how workspace bootstrap is assembled
+- how thread and draft actions move through the Worker
+- how public attachments and inline images are delivered
+- how inbound email enters the system
+- how scheduled maintenance works
+
+Authoritative references for this section:
+
+- `src/App.tsx`
+- `src/hooks/useAppController.tsx`
+- `src/worker.js`
+- `src/lib/auth.js`
+- `src/lib/db.js`
+- `wrangler.jsonc`
+
+---
+
+## 36. The Two Main Execution Loops
+
+This project has two main execution loops.
+
+### 36.1 Browser interaction loop
+
+This is the normal user path:
+
+1. load app shell
+2. fetch runtime config
+3. initialize Firebase
+4. sign in
+5. fetch workspace bootstrap
+6. load threads and related views
+7. call mutation endpoints for changes
+8. receive realtime refresh signals
+
+### 36.2 Background mail-processing loop
+
+This is the inbound mail path:
+
+1. Cloudflare Email Routing sends mail to the Worker
+2. the Worker checks alias rules
+3. the raw MIME message is stored in R2
+4. a queue payload is emitted
+5. the queue consumer parses and stores the message
+6. thread/message records are updated
+7. realtime notifications are published
+8. failures are recorded and later retried by a scheduled job
+
+Understanding the project requires seeing both loops at once. The product is half user-facing UI and half mail-processing pipeline.
+
+---
+
+## 37. Frontend Boot Sequence
+
+The browser boot path is coordinated by:
+
+- `src/main.tsx`
+- `src/App.tsx`
+- `src/hooks/useAppController.tsx`
+
+### 37.1 `src/main.tsx`
+
+`src/main.tsx` does only one thing:
+
+- mount `<App />`
+
+That is intentional. Almost all behavior lives in the controller hook and the app shell.
+
+### 37.2 `App.tsx`
+
+`App.tsx` is a render coordinator.
+
+It does not own business logic directly. Instead it reads state from `useAppController()` and chooses which high-level surface to render:
+
+- boot screen
+- login screen
+- authenticated shell
+- compose modal
+- active notices and toasts
+
+This means all major frontend state transitions pass through the controller hook.
+
+### 37.3 `useAppController()` startup
+
+The boot sequence begins in the main `useEffect()` inside `useAppController.tsx`.
+
+High-level order:
+
+1. call `fetchRuntimeConfig()`
+2. save the runtime config into state and `runtimeRef`
+3. normalize Firebase config
+4. initialize Firebase auth via `ensureFirebaseAuth()`
+5. attach `onIdTokenChanged()`
+6. if signed out, show login-ready state
+7. if signed in, fetch a Firebase ID token
+8. call `refreshBootstrap()`
+9. connect realtime
+
+If runtime config fails, the controller also has a fallback path using `FALLBACK_FIREBASE_CONFIG`.
+
+This is important because the app is designed to stay debuggable even if `/api/runtime-config` misbehaves.
+
+---
+
+## 38. Runtime Config Flow
+
+The runtime config endpoint is:
+
+- `GET /api/runtime-config`
+
+The Worker builds this through:
+
+- `buildRuntimeConfig(request, env)` in `src/worker.js`
+
+It returns:
+
+- `appName`
+- `apiBaseUrl`
+- `googleClientId`
+- `firebase.apiKey`
+- `firebase.authDomain`
+- `firebase.projectId`
+- `firebase.appId`
+- `firebase.messagingSenderId`
+
+### Why runtime config exists
+
+The frontend is static code, but the deployment environment may change:
+
+- domain
+- API base origin
+- Firebase web config
+- Google client ID
+
+By fetching runtime config from the Worker, the frontend avoids baking all environment-specific values directly into the JS bundle.
+
+### Important implementation note
+
+`resolveApiUrl()` in `useAppController.tsx` uses `runtime.apiBaseUrl` first and falls back to `window.location.origin`.
+
+This ensures the frontend talks to the correct live Worker origin.
+
+---
+
+## 39. Authentication Flow
+
+The current login flow is:
+
+1. the login button calls `signInWithGoogle()`
+2. the controller loads the Google Identity Services script if needed
+3. the controller requests a Google access token through a popup
+4. the controller exchanges that token into Firebase with:
+   - `GoogleAuthProvider.credential(null, accessToken)`
+   - `signInWithCredential(authRef.current, credential)`
+5. Firebase updates browser auth state
+6. `onIdTokenChanged()` fires
+7. the controller obtains the Firebase ID token
+8. the app begins authenticated API use
+
+This is different from a more brittle redirect/helper-page flow. The current system intentionally uses a token-popup path and then lets Firebase issue the authenticated browser session after credential exchange.
+
+Frontend references:
+
+- `loadGoogleIdentityScript()`
+- `requestGoogleAccessToken()`
+- `signInWithGoogle()`
+
+Backend references:
+
+- `src/lib/auth.js`
+- `src/worker.js`
+
+### Worker-side auth verification
+
+The Worker never trusts the browser blindly.
+
+Every authenticated API call sends:
+
+- `Authorization: Bearer <firebase-id-token>`
+
+The Worker then calls:
+
+- `requireUser(request, env)`
+
+This function:
+
+1. parses the bearer token
+2. verifies the token signature against Google Secure Token JWKS
+3. verifies:
+   - audience
+   - issuer
+   - expiration
+   - subject
+4. returns a normalized profile object
+
+Relevant backend functions:
+
+- `verifyFirebaseToken()`
+- `requireUser()`
+
+### Upserting the app user
+
+Once the Worker trusts the Firebase token, it does not directly operate on raw claims forever. Instead it upserts an app user record through:
+
+- `upsertUser()`
+
+That gives the rest of the application a stable D1-backed user row.
+
+---
+
+## 40. Generic API Call Path in the Frontend
+
+Most authenticated frontend requests go through the controller helper:
+
+- `api<T>()`
+
+This helper does several important things:
+
+1. adds `Content-Type: application/json` for JSON requests
+2. obtains the latest Firebase ID token via `getFreshToken()`
+3. adds the `Authorization` header
+4. resolves the final URL through `resolveApiUrl()`
+5. retries once on `401` by forcing a token refresh
+6. parses error payloads into useful frontend errors
+
+This means most frontend actions are thin wrappers around a single robust request helper.
+
+For binary download responses, the app uses:
+
+- `apiBlob()`
+
+That is used for attachment download flows.
+
+---
+
+## 41. Realtime Flow
+
+Realtime is exposed through:
+
+- `GET /api/realtime`
+
+The frontend path is:
+
+- `connectRealtime()` in `useAppController.tsx`
+
+Flow:
+
+1. get a fresh Firebase token
+2. open a WebSocket URL derived from `/api/realtime`
+3. append the token as a query parameter
+4. Worker verifies the token through `getRealtimeContext()`
+5. Worker resolves the correct Durable Object stub
+6. Worker hands the connection to `RealtimeHub`
+
+The Durable Object then accepts the websocket and can fan out events to active sessions.
+
+This is why the app can do live status updates such as:
+
+- workspace ready
+- new mail arrived
+- draft or thread related updates
+
+The frontend tracks connection state through:
+
+- `idle`
+- `connecting`
+- `connected`
+- `reconnecting`
+
+---
+
+## 42. Public Endpoints vs Authenticated Endpoints
+
+The Worker explicitly separates public and authenticated paths.
+
+### Public routes
+
+- `GET /api/runtime-config`
+- `GET /api/public/attachments`
+- `GET /api/public/inline-image`
+- `GET /__/firebase/init.json`
+- proxied `/__/auth/*`
+
+### Authenticated routes
+
+Everything else under `/api/*` that reads or mutates workspace state requires a valid Firebase bearer token.
+
+The route split is implemented in the main Worker `fetch()` handler.
+
+---
+
+## 43. Main Worker Route Families
+
+After runtime/public handling, the Worker parses the path and dispatches into route families.
+
+These are the main authenticated route groups.
+
+### 43.1 Session/bootstrap
+
+- `GET /api/bootstrap`
+- `GET /api/session`
+
+These provide the authenticated user summary and the initial workspace model.
+
+### 43.2 Provider connections
+
+- `/api/providers/cloudflare`
+- `/api/providers/resend`
+- `/api/providers/gemini`
+- `/api/providers/groq`
+
+These endpoints:
+
+- verify user-supplied provider credentials
+- save encrypted connection records
+- attach useful metadata summaries
+- sometimes trigger reconciliation work after save
+
+### 43.3 Cloudflare zones
+
+- `GET /api/cloudflare/zones`
+
+Used so the user can pick among available Cloudflare zones after connecting Cloudflare.
+
+### 43.4 Domain management
+
+- `/api/domains`
+
+Used for:
+
+- listing domains
+- creating domains
+- refreshing domain state
+- sending-domain selection
+- routing repair
+
+### 43.5 Mailboxes
+
+- `/api/mailboxes`
+
+Used for:
+
+- listing mailboxes
+- creating mailbox records
+- updating mailbox settings and signatures
+- deleting mailboxes
+
+### 43.6 HTML templates
+
+- `/api/html-templates`
+
+Used for:
+
+- listing templates
+- creating templates
+- updating templates
+- deleting templates
+
+### 43.7 Forward destinations
+
+- `/api/forward-destinations`
+
+Used for:
+
+- listing destination addresses
+- creating or updating forwarding targets
+
+### 43.8 Aliases
+
+- `/api/aliases`
+
+Used for:
+
+- listing alias rules
+- creating alias or catch-all rules
+- updating routing behavior
+- deleting rules
+
+### 43.9 Threads
+
+- `/api/threads`
+- `/api/threads/:id`
+- `/api/threads/actions`
+- other thread action subpaths inside the handler
+
+Used for:
+
+- paginated thread listing
+- opening one thread
+- applying thread actions such as:
+  - mark read
+  - mark unread
+  - archive
+  - trash
+  - restore
+  - star
+  - delete forever
+  - empty trash
+
+### 43.10 Drafts
+
+- `/api/drafts`
+
+Used for:
+
+- paginated listing
+- save/update draft
+- delete one draft
+- bulk delete all drafts
+
+### 43.11 Ingest failures
+
+- `/api/ingest-failures`
+- `/api/ingest-failures/:id/retry`
+
+Used for:
+
+- listing unresolved or historical ingest failures
+- enqueueing a retry for one failure
+
+### 43.12 Uploads
+
+- `POST /api/uploads`
+
+Used for:
+
+- attachment upload during compose
+- inline image upload for HTML email content
+
+### 43.13 Sending
+
+- `POST /api/send`
+
+Used for:
+
+- validating sender state
+- sending an outbound email through Resend
+- storing the sent message in D1
+- deleting the draft if applicable
+
+### 43.14 AI assistance
+
+- `POST /api/ai/assist`
+
+Used for:
+
+- AI compose
+- rewrite
+- proofread
+- summarize
+- other supported transformations
+
+### 43.15 Authenticated attachment download
+
+- `GET /api/attachments/:id`
+
+Used when the signed-in user downloads an attachment belonging to their workspace.
+
+---
+
+## 44. Workspace Bootstrap Flow
+
+The bootstrap endpoint is one of the most important flows in the entire app:
+
+- `GET /api/bootstrap`
+
+Frontend caller:
+
+- `refreshBootstrap()` in `useAppController.tsx`
+
+Worker implementation:
+
+- `bootstrapData(db, env, userId)`
+
+What it does:
+
+1. load the app user row
+2. load provider connections
+3. load domains
+4. load paginated mailbox data
+5. load alert counts
+6. load folder counts
+7. load unread counts by mailbox
+8. load relevant secrets for Cloudflare and Resend when needed
+9. load alias rules
+10. determine selected sending domain
+11. determine active sending status
+12. enrich domains with diagnostics
+
+The result is a condensed top-level workspace payload that powers:
+
+- sidebar badges
+- domain health panels
+- sending readiness
+- initial mailbox lists
+- alert surfaces
+
+This is why the application can open into a meaningful “workspace view” without separately calling a dozen endpoints first.
+
+---
+
+## 45. Domain Diagnostics Flow
+
+Domain health is not guessed from one field. It is actively composed through:
+
+- `collectDomainDiagnostics()`
+
+This function checks multiple sources:
+
+- saved domain row state
+- Cloudflare Email Routing status
+- Cloudflare DNS records
+- routing rules
+- catch-all rule state
+- Resend domain DNS and verification status
+
+The result is surfaced back into the bootstrap and domain listing payloads as fields such as:
+
+- `emailWorkerBound`
+- `mxStatus`
+- `catchAllStatus`
+- `catchAllPreview`
+- `routingRuleStatus`
+- `routingReady`
+- `dnsIssues`
+- `resendDnsRecords`
+- `resendDnsStatus`
+- `diagnosticError`
+
+This makes domain provisioning and repair visible in the UI instead of burying it in logs.
+
+---
+
+## 46. Thread List and Thread Detail Flow
+
+The frontend thread list is driven by:
+
+- `loadThreadsAction()`
+
+This function calls:
+
+- `GET /api/threads?folder=...&mailboxId=...&query=...&limit=50&cursor=...`
+
+The Worker delegates to:
+
+- `listThreadsPage()`
+
+The response shape is cursor-based:
+
+- `items`
+- `nextCursor`
+
+When a thread is selected, the frontend calls:
+
+- `selectThreadAction(threadId)`
+
+That issues:
+
+- `GET /api/threads/:id`
+
+The Worker responds through:
+
+- `getThread()`
+
+The result is a `ThreadDetail` object that contains:
+
+- thread summary fields
+- all messages in the thread
+
+This drives the right-hand message preview surface.
+
+---
+
+## 47. Draft Save Flow
+
+The compose modal uses autosave and manual save through:
+
+- `saveComposeDraft()`
+
+Frontend behavior:
+
+1. compose state changes
+2. autosave debounce triggers
+3. controller posts the draft to `/api/drafts`
+4. returned draft row replaces or prepends local draft state
+5. draft counts are updated in local state
+
+Backend behavior:
+
+- `handleDrafts()` routes the request
+- `saveDraft()` persists it in D1
+
+The compose layer separates:
+
+- saving a draft
+- sending a message
+- saving a template
+
+This is important because they share some content but have different persistence semantics.
+
+---
+
+## 48. Attachment Upload and Inline Image Flow
+
+Uploads use:
+
+- `POST /api/uploads`
+
+Frontend caller:
+
+- `uploadComposeAttachments()`
+
+Backend handler:
+
+- `handleUpload()`
+
+What happens:
+
+1. browser sends `multipart/form-data`
+2. Worker reads the uploaded file
+3. Worker stores it in R2 under a user-scoped `uploads/...` key
+4. Worker returns an attachment descriptor
+5. if the file is an image, the Worker also returns a signed public inline image URL
+
+This is used for two related features:
+
+- standard file attachments
+- pasted or dropped inline images inside HTML email composition
+
+There are two distinct download/read paths:
+
+### Authenticated attachment download
+
+- `GET /api/attachments/:id`
+
+Requires normal user auth.
+
+### Signed public attachment or inline image access
+
+- `GET /api/public/attachments`
+- `GET /api/public/inline-image`
+
+These use HMAC-signed query parameters rather than a logged-in session.
+
+This is especially useful for:
+
+- inline images embedded in email HTML
+- short-lived public file access
+
+---
+
+## 49. Outbound Send Flow
+
+Sending is handled by:
+
+- frontend: `sendCompose()`
+- backend: `handleSend()`
+
+High-level sequence:
+
+1. frontend posts the current compose payload to `POST /api/send`
+2. Worker resolves the actual source payload
+   - from a draft if an ID is provided
+   - or directly from request body
+3. Worker validates that:
+   - a sender mailbox is chosen
+   - a sending-capable domain is available
+   - the selected mailbox belongs to an allowed sending domain
+4. Worker loads the user’s Resend secret
+5. Worker reconciles sending-domain state again for safety
+6. Worker formats sender/recipients/body/attachments
+7. Worker calls `sendResendEmail()`
+8. Worker stores the sent message with `saveOutgoingMessage()`
+9. Worker updates threads/folders in D1
+10. Worker can remove the corresponding draft if applicable
+11. frontend refreshes bootstrap and, if needed, the `sent` folder view
+
+This design means the UI is not the final authority on whether send is allowed. The Worker revalidates that state before every outbound send.
+
+---
+
+## 50. AI Compose / Rewrite Flow
+
+Frontend caller:
+
+- `runComposeAiAction()`
+
+Backend handler:
+
+- `handleAiAssist()`
+
+Flow:
+
+1. user chooses AI provider and action
+2. frontend sends:
+   - provider
+   - model
+   - tone
+   - prompt
+   - output mode
+   - current subject/body
+   - selected text if applicable
+3. Worker validates provider availability
+4. Worker loads the correct provider secret from encrypted connections
+5. Worker constructs a normalized AI request through `buildAiAssistRequest()`
+6. Worker dispatches to the provider:
+   - Gemini
+   - Groq/Llama
+7. Worker normalizes the result through `parseAiAssistResult()`
+8. frontend merges the result back into compose state
+
+The key design idea is that AI providers are hidden behind a common internal request/result contract so the compose UI does not need to care about provider-specific API details.
+
+---
+
+## 51. Cloudflare / Resend / AI Connection Save Flow
+
+Each provider connection handler has a similar pattern:
+
+1. read the submitted credential or token
+2. validate it against the real provider
+3. store it encrypted in `provider_connections`
+4. store useful metadata such as available models, domain counts, verification summaries, or account context
+5. trigger reconciliation work if the provider affects live operational state
+
+Examples:
+
+### Cloudflare
+
+- verifies the token
+- lists zones
+- saves metadata such as zone count and account names
+- reconciles alias routes
+
+### Resend
+
+- verifies the API key
+- inspects domain state
+- reconciles sending capability for existing domains
+
+### Gemini
+
+- verifies the API key
+- stores available free-model metadata
+
+### Groq
+
+- verifies the API key
+- stores model metadata for the Llama path
+
+This is why the connections screen is more than a simple credential form. It is a provider discovery and validation step.
+
+---
+
+## 52. Inbound Email Flow
+
+Inbound mail enters through the Worker’s `email(message, env, ctx)` handler.
+
+This is one of the most important production flows in the system.
+
+High-level order:
+
+1. ensure DB schema is ready
+2. resolve the alias rule by recipient address
+3. if no alias rule exists:
+   - store the raw `.eml` in R2
+   - record an ingest failure with reason `alias_not_found`
+   - stop
+4. if the rule includes forwarding:
+   - call `message.forward(destination.email)` for verified destinations
+5. if the rule is `forward_only`:
+   - stop after forwarding
+6. otherwise:
+   - store raw MIME in R2
+   - enqueue a queue payload containing routing and storage information
+
+This separation is deliberate:
+
+- the email handler does the immediate routing decision
+- the queue consumer does the heavier parsing and D1 persistence
+
+That keeps the synchronous email-handling path lighter and more reliable.
+
+---
+
+## 53. Queue Ingest Flow
+
+After the inbound email handler enqueues a payload, the Worker’s queue consumer runs:
+
+- `queue(batch, env)`
+
+For each message in the batch:
+
+1. ensure schema
+2. pass payload to ingest logic
+3. acknowledge the queue item
+
+The deeper ingest pipeline:
+
+- loads the raw `.eml` from R2
+- parses it with `PostalMime`
+- resolves mailbox / alias context
+- extracts message metadata and body
+- stores or updates thread and message rows
+- updates unread counts and snippets
+- records failures when parsing or persistence fails
+
+The exact parsing and insert behavior is implemented through queue-related helpers plus `saveInboundMessage()`.
+
+The reason the system stores raw MIME before parsing is that it preserves recoverability. If parsing fails, the original email is still available.
+
+---
+
+## 54. Failure Recording and Retry Flow
+
+Failures are not dropped silently.
+
+When something goes wrong in inbound processing, the Worker records an `ingest_failures` row through:
+
+- `recordIngestFailure()`
+
+Later, retries can happen through two paths:
+
+### Manual retry
+
+- frontend calls `POST /api/ingest-failures/:id/retry`
+- Worker looks up the failure
+- Worker queues a retry payload
+
+### Scheduled retry
+
+- cron triggers `scheduled()`
+- Worker calls maintenance logic
+- pending failures are retried in bounded fashion
+
+This is an operationally important design choice. Email pipelines fail in real life. The app is built to acknowledge that and recover.
+
+---
+
+## 55. Scheduled Maintenance Flow
+
+The Worker implements:
+
+- `scheduled(_controller, env)`
+
+This is triggered by the cron expression in `wrangler.jsonc`:
+
+- `*/20 * * * *`
+
+What scheduled maintenance does:
+
+1. ensure schema
+2. load all user IDs
+3. for each user:
+   - refresh reliability state
+   - refresh provider/domain health as needed
+4. process pending ingest retries
+
+This means the app is not purely reactive to user clicks. It has its own maintenance loop that heals or updates background state.
+
+---
+
+## 56. Security Envelope on Requests
+
+Several request-layer protections are always in play.
+
+### 56.1 CORS
+
+The Worker builds CORS rules through:
+
+- `createCorsHeaders()`
+- `withCors()`
+
+Allowed origins come from:
+
+- hardcoded local defaults
+- `ALLOWED_ORIGINS`
+- the request’s own forwarded origin when appropriate
+
+### 56.2 Security headers
+
+HTML asset responses pass through:
+
+- `withSecurityHeaders()`
+
+This sets:
+
+- `Content-Security-Policy`
+- `Referrer-Policy`
+- `X-Content-Type-Options`
+
+### 56.3 Signed public file URLs
+
+Public attachment and inline-image URLs are not open links. They are signed with HMAC and include identity or file scope in the payload.
+
+Important helper functions:
+
+- `signAttachmentToken()`
+- `verifyAttachmentSignature()`
+- `buildAttachmentUrl()`
+- `buildInlineImageUrl()`
+
+This limits casual tampering and replay.
+
+---
+
+## 57. Why The API Design Looks The Way It Does
+
+The route design is intentionally pragmatic rather than framework-pure.
+
+Characteristics:
+
+- one Worker
+- many focused handler families
+- authenticated and public routes split early
+- heavy use of explicit route branches
+- cursor-based listing endpoints
+- side-effecting POST endpoints for actions
+
+This fits the project because:
+
+- Cloudflare Worker routing is already code-first
+- the app is operationally dense
+- external provider orchestration needs explicit control
+- one-file routing keeps deployment and debugging simple
+
+The downside is that `src/worker.js` becomes large. The upside is that the full backend request model is visible in one place.
+
+---
+
+## 58. Practical Mental Model For The Runtime Flow
+
+A concise mental model for runtime behavior is:
+
+### Browser side
+
+- `App.tsx` renders surfaces
+- `useAppController()` owns app state
+- `api()` sends bearer-authenticated requests
+- realtime updates refresh live views
+
+### Worker side
+
+- `fetch()` routes HTTP requests
+- `email()` receives inbound mail
+- `queue()` processes async ingest
+- `scheduled()` repairs and refreshes background state
+
+### Storage side
+
+- D1 stores structured state
+- R2 stores raw and binary content
+- Queue decouples ingest
+- Durable Object coordinates live sessions
+
+### Provider side
+
+- Firebase authenticates the browser user
+- Cloudflare manages routing and zones
+- Resend sends outbound mail
+- Gemini and Groq provide AI generation
+
+That is the runtime system in one view.
+
+---
+
+## 59. What Part 4 Should Cover Next
+
+The next section should zoom deeper into the mail pipeline itself:
+
+- how inbound raw MIME is parsed
+- how threads are created or matched
+- how message snippets are built
+- how attachments are represented
+- how outbound mail is persisted after send
+- how folders, unread counts, and star states are maintained
+
+That will be the operational heart of the email engine, beyond the general API map in this part.
