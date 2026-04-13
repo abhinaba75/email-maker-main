@@ -4,12 +4,18 @@ import {
   GoogleAuthProvider,
   getAuth,
   onIdTokenChanged,
-  signInWithPopup,
+  signInWithCredential,
   signOut as firebaseSignOut,
   type Auth,
   type User,
 } from 'firebase/auth';
-import { AI_TONE_OPTIONS, BOOT_REQUEST_TIMEOUT_MS, FALLBACK_FIREBASE_CONFIG, GEMINI_MODEL_OPTIONS } from '../lib/constants';
+import {
+  AI_TONE_OPTIONS,
+  BOOT_REQUEST_TIMEOUT_MS,
+  FALLBACK_FIREBASE_CONFIG,
+  FALLBACK_GOOGLE_CLIENT_ID,
+  GEMINI_MODEL_OPTIONS,
+} from '../lib/constants';
 import {
   buildAlertSummary,
   formatAddresses,
@@ -74,6 +80,41 @@ const EMPTY_CURSORS: CursorState = {
   mailboxes: null,
   ingestFailures: null,
 };
+
+const GOOGLE_IDENTITY_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
+
+type GoogleTokenResponse = {
+  access_token?: string;
+  error?: string;
+  error_description?: string;
+};
+
+type GoogleTokenError = {
+  type?: string;
+  message?: string;
+};
+
+type GoogleTokenClient = {
+  requestAccessToken: (options?: { prompt?: string }) => void;
+};
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        oauth2?: {
+          initTokenClient: (config: {
+            client_id: string;
+            scope: string;
+            prompt?: string;
+            callback: (response: GoogleTokenResponse) => void;
+            error_callback?: (error: GoogleTokenError) => void;
+          }) => GoogleTokenClient;
+        };
+      };
+    };
+  }
+}
 
 function normalizeFirebaseConfig(config?: Partial<RuntimeFirebaseConfig> | null): RuntimeFirebaseConfig {
   const candidate = config || {};
@@ -151,6 +192,7 @@ export function useAppController(): AppController {
   const authRef = useRef<Auth | null>(null);
   const runtimeRef = useRef<RuntimeConfig | null>(null);
   const tokenRef = useRef('');
+  const googleScriptPromiseRef = useRef<Promise<void> | null>(null);
   const realtimeSocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -162,6 +204,84 @@ export function useAppController(): AppController {
     const firebaseApp = getApps().length ? getApp() : initializeApp(config);
     authRef.current = getAuth(firebaseApp);
     return true;
+  }
+
+  function loadGoogleIdentityScript(): Promise<void> {
+    if (window.google?.accounts?.oauth2) {
+      return Promise.resolve();
+    }
+    if (googleScriptPromiseRef.current) {
+      return googleScriptPromiseRef.current;
+    }
+    googleScriptPromiseRef.current = new Promise((resolve, reject) => {
+      const existing = document.querySelector(`script[src="${GOOGLE_IDENTITY_SCRIPT_SRC}"]`) as HTMLScriptElement | null;
+      const handleLoad = () => resolve();
+      const handleError = () => {
+        googleScriptPromiseRef.current = null;
+        reject(new Error('Google sign-in script failed to load.'));
+      };
+      if (existing) {
+        if (window.google?.accounts?.oauth2) {
+          resolve();
+          return;
+        }
+        existing.addEventListener('load', handleLoad, { once: true });
+        existing.addEventListener('error', handleError, { once: true });
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = GOOGLE_IDENTITY_SCRIPT_SRC;
+      script.async = true;
+      script.defer = true;
+      script.addEventListener('load', handleLoad, { once: true });
+      script.addEventListener('error', handleError, { once: true });
+      document.head.appendChild(script);
+    });
+    return googleScriptPromiseRef.current;
+  }
+
+  async function requestGoogleAccessToken(clientId: string): Promise<string> {
+    await loadGoogleIdentityScript();
+    const oauth2 = window.google?.accounts?.oauth2;
+    if (!oauth2) {
+      throw new Error('Google sign-in script loaded without OAuth support.');
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = <T,>(callback: (value: T) => void) => (value: T) => {
+        if (settled) return;
+        settled = true;
+        callback(value);
+      };
+      const client = oauth2.initTokenClient({
+        client_id: clientId,
+        scope: 'openid email profile',
+        prompt: 'select_account',
+        callback: finish((response: GoogleTokenResponse) => {
+          if (response.error) {
+            const error = new Error(response.error_description || response.error || 'Google sign-in failed.');
+            (error as Error & { code?: string }).code = `google/${response.error}`;
+            reject(error);
+            return;
+          }
+          if (!response.access_token) {
+            reject(new Error('Google sign-in did not return an access token.'));
+            return;
+          }
+          resolve(response.access_token);
+        }),
+        error_callback: finish((response: GoogleTokenError) => {
+          const error = new Error(response.message || response.type || 'Google sign-in failed.');
+          (error as Error & { code?: string }).code = `google/${response.type || 'error'}`;
+          reject(error);
+        }),
+      });
+      try {
+        client.requestAccessToken({ prompt: 'select_account' });
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('Google sign-in popup could not be opened.'));
+      }
+    });
   }
 
   async function getFreshToken(forceRefresh = false): Promise<string> {
@@ -285,9 +405,7 @@ export function useAppController(): AppController {
     if (typeof payload.authDomain === 'string' && payload.authDomain) {
       parts.push(`authDomain=${payload.authDomain}`);
     }
-    if (typeof payload.host === 'string' && payload.host) {
-      parts.push(`handler=https://${payload.host}/__/auth/handler`);
-    }
+    parts.push('flow=google-token-firebase-credential');
     return parts.join(' | ') || 'An unexpected error occurred.';
   }
 
@@ -1054,18 +1172,29 @@ export function useAppController(): AppController {
     setLoginMessage('Opening Google sign-in...');
     setStatus('Opening Google sign-in...');
     try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: 'select_account' });
-      await signInWithPopup(authRef.current, provider);
+      const clientId = String(runtimeRef.current?.googleClientId || FALLBACK_GOOGLE_CLIENT_ID || '').trim();
+      if (!clientId) {
+        throw new Error('Google client ID is missing from runtime configuration.');
+      }
+      const accessToken = await requestGoogleAccessToken(clientId);
+      setLoginMessage('Signing you in...');
+      setStatus('Signing you in...');
+      const credential = GoogleAuthProvider.credential(null, accessToken);
+      await signInWithCredential(authRef.current, credential);
     } catch (error) {
       const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: string }).code || '') : '';
-      if (code === 'auth/popup-closed-by-user') {
+      if (code === 'google/popup_closed' || code === 'google/popup_closed_by_user') {
         const message = 'Google sign-in popup was closed.';
         setLoginMessage(message);
         setStatus(message);
         return;
       }
-      if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
+      if (
+        code === 'google/popup_failed_to_open'
+        || code === 'google/popup_blocked'
+        || code === 'auth/popup-blocked'
+        || code === 'auth/cancelled-popup-request'
+      ) {
         const message = 'Popup blocked. Allow popups for this site and try again.';
         setLoginMessage(message);
         setStatus(message);

@@ -131,9 +131,14 @@ function resolveApiBaseUrl(request, env) {
 function buildRuntimeConfig(request, env) {
   const appOrigin = resolveApiBaseUrl(request, env);
   const appHost = new URL(appOrigin).host;
-  const preferredAuthDomain = appHost === 'email.itsabhinaba.in'
-    ? appHost
-    : (env.PUBLIC_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || 'email-maker-forge-ad61.firebaseapp.com');
+  const configuredAuthDomain = String(
+    env.PUBLIC_FIREBASE_AUTH_DOMAIN
+    || env.FIREBASE_AUTH_DOMAIN
+    || 'email-maker-forge-ad61.firebaseapp.com',
+  ).trim() || 'email-maker-forge-ad61.firebaseapp.com';
+  const preferredAuthDomain = configuredAuthDomain === appHost
+    ? 'email-maker-forge-ad61.firebaseapp.com'
+    : configuredAuthDomain;
   return {
     appName: env.APP_NAME || 'Email By Abhinaba Das',
     apiBaseUrl: appOrigin,
