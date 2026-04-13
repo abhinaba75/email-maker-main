@@ -68,7 +68,7 @@
   "vars": {
     "APP_NAME": "Email By Abhinaba Das",
     "PUBLIC_APP_ORIGIN": "https://email.itsabhinaba.in",
-    "PUBLIC_GOOGLE_CLIENT_ID": "150955610279-rv9ukdq7ruih96q7vlqmi67uh1isr50d.apps.googleusercontent.com"
+    "PUBLIC_GOOGLE_CLIENT_ID": "150955610279-rv9ukdq7ruih96q7vlqmi67uh1jsr50d.apps.googleusercontent.com"
   },
   "routes": [
     {

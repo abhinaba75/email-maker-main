@@ -9,7 +9,7 @@ export const FALLBACK_FIREBASE_CONFIG = {
   messagingSenderId: '150955610279',
 };
 
-export const FALLBACK_GOOGLE_CLIENT_ID = '150955610279-rv9ukdq7ruih96q7vlqmi67uh1isr50d.apps.googleusercontent.com';
+export const FALLBACK_GOOGLE_CLIENT_ID = '150955610279-rv9ukdq7ruih96q7vlqmi67uh1jsr50d.apps.googleusercontent.com';
 
 export const GEMINI_MODEL_OPTIONS = [
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
