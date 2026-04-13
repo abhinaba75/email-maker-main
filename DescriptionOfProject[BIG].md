@@ -2954,3 +2954,1602 @@ The next section should zoom deeper into the mail pipeline itself:
 - how folders, unread counts, and star states are maintained
 
 That will be the operational heart of the email engine, beyond the general API map in this part.
+
+---
+
+# Part 4: The Mail Engine, MIME Lifecycle, Threading Logic, Attachments, Sending, and Cleanup
+
+This part moves from “what routes exist” to “how mail actually becomes data.”
+
+If Part 3 explained the transport surfaces, Part 4 explains the mail engine itself:
+
+- how inbound email enters the system
+- how raw MIME is stored
+- how queue-based parsing works
+- how a thread is created or matched
+- how snippets and unread counts are derived
+- how attachments are persisted and later served
+- how outbound mail is prepared and recorded
+- how drafts and uploads participate in the send pipeline
+- how trash and permanent deletion remove both database rows and R2 objects
+
+This is the operational core of the product.
+
+The main implementation files discussed here are:
+
+- `src/worker.js`
+- `src/lib/db.js`
+- `src/lib/mail.js`
+- `src/lib/sending.js`
+
+---
+
+## 60. The Core Mail Design Philosophy
+
+The mail engine is built around one very practical rule:
+
+> raw bytes should be preserved, structured rows should be queryable, and expensive or failure-prone parsing should not block inbound delivery.
+
+That rule explains several architectural decisions:
+
+1. inbound email is stored immediately as raw `.eml`
+2. parsing is deferred to a queue worker
+3. structured message data is written into D1
+4. attachments are broken out into R2 objects
+5. thread summaries are materialized onto the `threads` table
+6. failures are tracked explicitly in `ingest_failures`
+
+This is not just a convenience. It is what makes the system operationally safe.
+
+If parsing fails:
+
+- the raw message can still exist
+- the failure can still be retried
+- the failure can still be shown in the admin UI
+
+That is much safer than a design where parsing is attempted inline during SMTP-style receipt and lost forever on failure.
+
+---
+
+## 61. The Three Representations of a Message
+
+Inside this project, one email can exist in three distinct forms:
+
+### 61.1 Raw MIME
+
+Stored in R2 under keys like:
+
+- `raw/... .eml`
+
+This is the exact original RFC 822 style message body as received by the Cloudflare Email Worker.
+
+### 61.2 Parsed message row
+
+Stored in D1 `messages`.
+
+This contains normalized structured fields:
+
+- `from_json`
+- `to_json`
+- `cc_json`
+- `subject`
+- `text_body`
+- `html_body`
+- `snippet`
+- `folder`
+- `is_read`
+- `starred`
+
+### 61.3 Attachment objects
+
+Stored in two places:
+
+- metadata in D1 `attachments`
+- binary object in R2 under `attachments/...` or `uploads/...`
+
+That separation is important:
+
+- D1 is used for listing and relationships
+- R2 is used for actual bytes
+
+---
+
+## 62. Foundational Mail Helpers in `src/lib/mail.js`
+
+Before the Worker writes anything, the system relies on simple mail-focused helpers.
+
+### 62.1 Subject normalization
+
+Function:
+
+- `normalizeSubject(subject)`
+
+Purpose:
+
+- strips repeated prefixes like `Re:`, `Fw:`, `Fwd:`
+- lowercases the result
+- gives the thread matcher a stable subject key
+
+Example:
+
+- `Re: RE: Hello There`
+- becomes
+- `hello there`
+
+This matters because thread heuristics are partly based on normalized subject matching when reference headers do not provide a stronger signal.
+
+### 62.2 Snippet generation
+
+Function:
+
+- `buildSnippet(textBody, htmlBody)`
+
+Purpose:
+
+- chooses text body when available, otherwise HTML
+- strips tags
+- collapses whitespace
+- truncates to 180 characters
+
+That snippet is stored on each message row and also copied into thread summaries.
+
+So when the inbox list shows preview text, it is not generating that in the browser every time. The snippet was computed during persistence.
+
+### 62.3 Address parsing helpers
+
+Functions:
+
+- `parseAddressObject()`
+- `parseAddressList()`
+
+Purpose:
+
+- normalize sender/recipient shapes into `{ email, name }`
+- keep DB storage consistent across inbound, outbound, and draft flows
+
+### 62.4 ID generation
+
+Function:
+
+- `createId(prefix)`
+
+Used everywhere for application-owned IDs:
+
+- `thr_` for threads
+- `msg_` for messages
+- `att_` for attachments
+- `drf_` for drafts
+- `raw_` for raw objects
+
+This means database rows do not depend on auto-increment integer IDs. That is useful for queue payloads, client references, and distributed writes.
+
+---
+
+## 63. Inbound Mail Starts in `export default.email()`
+
+The first real inbound touchpoint is the Worker’s email handler in `src/worker.js`:
+
+- `async email(message, env, ctx)`
+
+This is the Cloudflare Email Worker entrypoint.
+
+The `message` object contains the inbound email, including:
+
+- envelope recipient
+- sender
+- raw MIME payload
+- headers
+- forwarding helpers like `message.forward(...)`
+
+The email handler does not try to do all parsing itself. Instead, it decides:
+
+1. which alias rule this recipient maps to
+2. whether forwarding should happen
+3. whether inbox storage should happen
+4. whether raw MIME should be queued for later parsing
+
+That is the product’s first important bifurcation.
+
+---
+
+## 64. Recipient Resolution Via Alias Rules
+
+Function used:
+
+- `getAliasRuleByRecipient(env.DB, message.to)`
+
+This answers the question:
+
+> What does this recipient address mean inside this workspace?
+
+If no alias rule exists:
+
+1. raw MIME is still saved into R2 under `raw/...`
+2. an ingest failure is recorded with reason `alias_not_found`
+3. the function returns without dropping the evidence
+
+This matters operationally because it lets the app show:
+
+- that mail arrived
+- that it had no matching alias
+- that raw material exists for later inspection or retry
+
+This is much better than silently losing the message.
+
+---
+
+## 65. Forwarding Happens Before Inbox Parsing
+
+Once an alias rule is found, the Worker calculates the forwarding targets:
+
+- alias rule contains `forward_destination_json`
+- `listForwardDestinations()` loads full destination records
+- only verified destinations are considered valid
+
+If alias mode is:
+
+- `forward_only`
+- or `inbox_and_forward`
+
+then the Worker calls:
+
+- `message.forward(destination.email)`
+
+for each verified destination.
+
+This is an important product behavior:
+
+- forwarding is performed at receipt time by Cloudflare’s email runtime
+- inbox storage is a separate concern
+
+If alias mode is `forward_only`, the function returns after forwarding and does **not** enqueue inbox ingestion.
+
+If alias mode is `inbox_and_forward`, both happen:
+
+- forwarding to destinations
+- raw MIME saved for inbox processing
+
+---
+
+## 66. Raw MIME Preservation
+
+Whenever inbox storage is required, the Worker writes the raw MIME immediately:
+
+- key shape: `raw/${Date.now()}-${createId('raw_')}.eml`
+
+and stores it in:
+
+- `env.MAIL_BUCKET`
+
+with content type:
+
+- `message/rfc822`
+
+This is the canonical inbound source object.
+
+Why this step exists:
+
+- queue processing can be retried without needing the original Cloudflare `message` object again
+- failures can be audited
+- the exact original email is preserved for later re-processing or download
+
+That raw key is then embedded into the queue payload.
+
+---
+
+## 67. Queue Decoupling: Receipt Is Not Parsing
+
+The email handler enqueues:
+
+- `env.MAIL_INGEST_QUEUE.send(payload)`
+
+Payload includes:
+
+- `aliasRuleId`
+- `userId`
+- `domainId`
+- `mailboxId`
+- `to`
+- `from`
+- `rawKey`
+- `receivedAt`
+- `messageId`
+
+The `ctx.waitUntil(...)` usage means the Worker can finish the email event while allowing the queue send to continue safely.
+
+This design separates:
+
+- real-time email receipt
+- potentially expensive MIME parsing
+- D1 writes
+- attachment extraction
+
+That separation is what makes the system more resilient under load or parser failures.
+
+---
+
+## 68. Queue Consumer: `queue(batch, env)`
+
+The Queue consumer is:
+
+- `async queue(batch, env)`
+
+It does:
+
+1. `ensureSchema(env.DB)`
+2. iterates `batch.messages`
+3. calls `queueIngest(item.body, env)`
+4. acknowledges the queue message with `item.ack()`
+
+This means the actual mail parsing logic is inside:
+
+- `queueIngest(payload, env)`
+
+That is the real inbound parser pipeline.
+
+---
+
+## 69. First Queue Guard: Duplicate by Raw Key
+
+The first guard inside `queueIngest()` is:
+
+- `findInboundMessageByRawKey(env.DB, payload.userId, payload.rawKey)`
+
+If a message for that raw key already exists, the function returns early.
+
+This is a strong idempotency check.
+
+Why it matters:
+
+- queue retries can happen
+- manual failure requeue can happen
+- scheduled maintenance retry can happen
+
+Without this, the same raw MIME could be inserted multiple times.
+
+This guard prevents that.
+
+---
+
+## 70. Second Queue Guard: Missing Raw Object
+
+If the queue consumer cannot load the raw object:
+
+- `env.MAIL_BUCKET.get(payload.rawKey)`
+
+then it records:
+
+- ingest failure reason: `raw_message_missing`
+
+and optionally emits a realtime event:
+
+- `type: 'ingest.failed'`
+
+This matters because failure to find the raw object means the queue payload outlived its backing storage or the upload failed unexpectedly. The system records the failure instead of pretending it succeeded.
+
+---
+
+## 71. MIME Parsing Via `PostalMime`
+
+Parser used:
+
+- `new PostalMime()`
+
+Then:
+
+- `parser.parse(await object.arrayBuffer())`
+
+This converts the raw `.eml` bytes into a structured object containing things like:
+
+- `from`
+- `to`
+- `cc`
+- `subject`
+- `text`
+- `html`
+- `messageId`
+- `inReplyTo`
+- `references`
+- `attachments`
+
+This is where the raw RFC-style email becomes application-usable structured data.
+
+The code then normalizes:
+
+- sender through `parseOneAddress()`
+- recipient arrays through `normalizeParsedList()`
+
+This creates a consistent internal shape no matter what the original MIME headers looked like.
+
+---
+
+## 72. Alias Metadata Can Be Recovered During Retry
+
+Inside `queueIngest()`:
+
+- if `payload.userId` already exists, the queue payload itself can act as alias metadata
+- otherwise, the system falls back to `getAliasRuleByRecipient(env.DB, payload.to)`
+
+This design is subtle but good.
+
+Why:
+
+- retries may happen later when only the raw key and recipient remain reliable
+- the system can still re-derive the alias rule from the current database if necessary
+
+If alias metadata still cannot be found, the ingest failure is recorded again as:
+
+- `alias_not_found`
+
+and surfaced through realtime/admin tooling.
+
+---
+
+## 73. Text Body and HTML Body Extraction
+
+After parsing:
+
+- `const textBody = parsed.text || ''`
+- `const htmlBody = parsed.html || ''`
+
+These two fields are stored independently.
+
+That is important because the app supports:
+
+- inbox preview
+- plain-text fallback
+- HTML rendering in preview panes
+- AI rewrite/compose workflows
+
+Keeping both representations allows the UI to choose the right render mode while preserving the original content.
+
+---
+
+## 74. Attachment Extraction During Ingest
+
+For every parsed attachment:
+
+1. build a storage key:
+   - `attachments/${userId}/${Date.now()}-${createId('att_')}-${filename}`
+2. write the binary to R2
+3. capture metadata in a temporary array
+
+Captured metadata includes:
+
+- `fileName`
+- `mimeType`
+- `byteSize`
+- `contentId`
+- `disposition`
+- `r2Key`
+
+This is a very important distinction:
+
+- the email parser does not try to inline attachment bytes into D1
+- R2 stores bytes
+- D1 stores references
+
+That is the correct storage split for email attachments.
+
+---
+
+## 75. `contentId` Matters for HTML Email
+
+During attachment extraction, the system preserves:
+
+- `contentId`
+
+Why this matters:
+
+- HTML emails often reference embedded images via `cid:...`
+- preserving `contentId` allows future or current rendering logic to associate inline assets with the right attachment
+
+Even when the UI is currently using signed hosted URLs for some inline images, preserving original `contentId` keeps the model accurate and enables better rendering or export behaviors later.
+
+---
+
+## 76. Saving an Inbound Message to D1
+
+The main persistence function is:
+
+- `saveInboundMessage(db, { ... })`
+
+It performs the following operations in order.
+
+### 76.1 Deduplicate by raw key
+
+Checks:
+
+- `findInboundMessageByRawKey(...)`
+
+### 76.2 Deduplicate by `internet_message_id`
+
+Checks:
+
+- `findInboundMessageByInternetMessageId(...)`
+
+This means the system has two independent dedupe signals:
+
+- the raw object key
+- the message’s internet message ID
+
+That is safer than relying on one alone.
+
+### 76.3 Build participant list
+
+Participants are assembled from:
+
+- sender
+- to recipients
+- cc recipients
+
+These get passed into thread creation or matching.
+
+### 76.4 Resolve or create thread
+
+Function:
+
+- `ensureThread(db, { ... })`
+
+### 76.5 Insert message row
+
+Inserted into `messages` with:
+
+- `direction = 'inbound'`
+- `folder = 'inbox'`
+- `is_read = 0`
+- `starred = 0`
+- `has_attachments` based on extracted attachments
+
+### 76.6 Insert attachment rows
+
+Every extracted attachment becomes an `attachments` row.
+
+### 76.7 Refresh thread summary
+
+Function:
+
+- `refreshThreadSummary(db, threadId)`
+
+### 76.8 Resolve matching ingest failures
+
+Function:
+
+- `resolveIngestFailuresForRawKey(db, rawKey)`
+
+So a successful ingest does not just create data. It also clears prior operational failure state for that raw message.
+
+---
+
+## 77. Thread Matching Heuristics in `ensureThread()`
+
+The thread system uses a layered heuristic.
+
+Thread resolution order:
+
+1. explicit thread ID, if the caller already knows the thread
+2. match by reference headers
+3. match by normalized subject and mailbox
+4. create a new thread
+
+That logic exists in:
+
+- `ensureThread()`
+
+### 77.1 Explicit thread ID
+
+Used mostly by outbound mail when replying from an existing draft or thread context.
+
+### 77.2 Match by references
+
+Function:
+
+- `getThreadByReference(db, userId, referenceIds)`
+
+This is stronger than subject-based matching because it uses actual message header relationships:
+
+- `In-Reply-To`
+- `References`
+
+### 77.3 Match by mailbox + normalized subject
+
+Function:
+
+- `findExistingThread(db, userId, mailboxId, subject)`
+
+This uses `normalizeSubject(subject)`.
+
+This is the fallback heuristic when no reference chain is available.
+
+### 77.4 Create new thread
+
+If no existing thread is found:
+
+- create `thr_...`
+- initialize participants
+- initialize counters at zero
+- set folder `inbox`
+
+This makes the thread table a durable summary table rather than a derived-on-read table.
+
+---
+
+## 78. Why Thread Summaries Are Materialized
+
+After any message insertion or thread action, the system calls:
+
+- `refreshThreadSummary(db, threadId)`
+
+This recalculates and writes onto the `threads` row:
+
+- latest subject
+- normalized subject
+- latest snippet
+- folder
+- mailbox and domain
+- `latest_message_at`
+- `message_count`
+- `unread_count`
+- `starred`
+
+This is a major design choice.
+
+Instead of calculating every inbox row by scanning all messages at read time, the system materializes the summary. That makes inbox rendering faster and simpler:
+
+- list query reads `threads`
+- detail query reads `messages`
+
+This is a standard and very practical mail-client pattern.
+
+---
+
+## 79. How `refreshThreadSummary()` Chooses the Canonical Thread State
+
+The function does two separate reads:
+
+### 79.1 Aggregate summary query
+
+Computes:
+
+- `MAX(created_at)` as latest message time
+- unread count for inbox messages
+- starred count
+- total message count
+
+### 79.2 Latest message query
+
+Fetches the newest message’s:
+
+- subject
+- normalized subject
+- snippet
+- folder
+- mailbox
+- domain
+
+Then it updates the thread row with a merged summary.
+
+This means thread state is defined by:
+
+- aggregate counters from all messages
+- visible display metadata from the latest message
+
+That is exactly how inbox thread rows are supposed to behave.
+
+---
+
+## 80. Why Folder State Lives on Both Messages and Threads
+
+Messages have:
+
+- `folder`
+
+Threads also have:
+
+- `folder`
+
+That duplication is intentional.
+
+Messages need folder state because actions like archive/trash/restore are applied at the message row level. Threads need folder state because inbox listing happens from the summary table.
+
+The thread folder is effectively:
+
+- the folder of the latest or unified visible state after summary refresh
+
+That is why `applyThreadAction()` mutates messages first and refreshes the thread summary second.
+
+---
+
+## 81. Inbound Duplicate Detection
+
+There are two main duplicate protections for inbound mail:
+
+### 81.1 Raw object duplication
+
+- `findInboundMessageByRawKey()`
+
+Prevents queue retries from duplicating the same stored raw message.
+
+### 81.2 Internet message ID duplication
+
+- `findInboundMessageByInternetMessageId()`
+
+Prevents two raw objects that refer to the same logical email from being inserted twice.
+
+These two together make inbound processing reasonably idempotent without requiring a more complex dedupe ledger.
+
+---
+
+## 82. Realtime Events on Successful Ingest
+
+After inbound save succeeds, the Worker publishes:
+
+- `type: 'thread.updated'`
+- `threadId`
+- `folder: 'inbox'`
+- `duplicate`
+
+That event goes through the realtime Durable Object channel.
+
+This is how the browser can update inbox state without a full reload after new mail is ingested.
+
+So the mail engine is not just persistence. It is also live-notification aware.
+
+---
+
+## 83. Outbound Mail Begins in `handleSend()`
+
+The send pipeline is HTTP-driven, not queue-driven.
+
+Entry point:
+
+- `POST /api/send`
+- handled by `handleSend(request, env, user)`
+
+This function is responsible for:
+
+1. resolving whether the source is a draft or direct compose payload
+2. validating sender mailbox and sending domain
+3. validating recipients
+4. preparing attachments
+5. generating fallback HTML from text when needed
+6. sending through Resend
+7. recording the outbound message in D1
+8. deleting the draft if the send came from a draft
+9. publishing realtime updates
+
+This is the entire outbound transaction.
+
+---
+
+## 84. Drafts Can Be the Source of a Send
+
+At the start of `handleSend()`:
+
+- `draftId = body.draftId || body.id || null`
+
+If a draft exists, the Worker builds the send payload by merging:
+
+- draft data
+- request body overrides
+
+This is useful because the frontend can:
+
+- save drafts continuously
+- reopen drafts later
+- send using a single endpoint without manually re-hydrating every field client-side
+
+The Worker treats drafts as first-class persisted compose state.
+
+---
+
+## 85. Sending Domain Validation Is Strict
+
+Before anything is sent, the Worker validates:
+
+1. mailbox exists
+2. mailbox’s domain exists
+3. domain send capability is enabled
+4. Resend connection exists
+
+Functions involved:
+
+- `getMailbox()`
+- `getDomain()`
+- `reconcileSendingDomainState(...)`
+
+This prevents accidental sending from:
+
+- receive-only domains
+- unselected domains
+- domains without an active Resend connection
+
+This is a strong operational safety check.
+
+---
+
+## 86. Recipient Validation Is Minimal but Necessary
+
+Recipient lists are parsed through:
+
+- `parseAddressList(payload.to || [])`
+- same for cc/bcc
+
+The minimum enforced requirement is:
+
+- at least one valid `To` recipient
+
+This is deliberately pragmatic. Most other validation is delegated to downstream provider expectations or user editing.
+
+---
+
+## 87. Attachment Limits for Outbound Mail
+
+Before sending, attachments pass through:
+
+- `prepareResendAttachments(request, env, user, attachments)`
+
+Constraints:
+
+- per-file maximum: `20 MB`
+- total maximum: `35 MB`
+
+The function:
+
+1. validates byte sizes
+2. builds signed download URLs via `buildAttachmentUrl(...)`
+3. returns Resend attachment descriptors:
+   - `filename`
+   - `path`
+
+This means Resend fetches the attachment via a signed URL rather than the Worker base64-embedding file contents directly at send time.
+
+That is a useful design for large or multiple attachments because:
+
+- memory pressure stays lower in the Worker
+- the file bytes remain in R2
+- the send path stays simpler
+
+---
+
+## 88. Signed Attachment URLs Are User-Scoped
+
+Attachment URLs are not generic links.
+
+`buildAttachmentUrl()` signs:
+
+- `user.id`
+- `attachment.id`
+- `attachment.r2Key`
+- `expiry`
+
+Verification later happens in:
+
+- `handlePublicAttachment()`
+
+This prevents the earlier weaker model where a leaked URL could be reused more broadly than intended.
+
+This is an important security hardening detail.
+
+---
+
+## 89. Plain Text Can Be Promoted to HTML
+
+If compose did not provide HTML, `handleSend()` generates HTML using:
+
+- `textToEmailHtml(text)`
+
+This function:
+
+- normalizes line endings
+- preserves meaningful spaces
+- converts paragraph breaks to `<p>`
+- converts single newlines to `<br>`
+
+So even plain-text composition can still produce an HTML email body for providers or preview surfaces.
+
+That gives the app a clean fallback without forcing the user to write HTML manually.
+
+---
+
+## 90. Outbound Mail Is Sent Through Resend
+
+Provider function:
+
+- `sendResendEmail(resend.secret, payload)`
+
+Inputs include:
+
+- `from`
+- `to`
+- `cc`
+- `bcc`
+- `subject`
+- `text`
+- `html`
+- `attachments`
+
+`from` is built with:
+
+- `formatSender(mailbox.display_name, mailbox.email_address)`
+
+This creates the canonical sender display format:
+
+- `Display Name <address@example.com>`
+
+This send step is the only place where the project actually hands off outbound delivery to the external mail provider.
+
+Everything else around it is orchestration and persistence.
+
+---
+
+## 91. Recording Sent Mail in D1
+
+After Resend succeeds, the Worker calls:
+
+- `saveOutgoingMessage(db, { ... })`
+
+This mirrors inbound storage in several important ways:
+
+- it uses thread resolution
+- it inserts a `messages` row
+- it inserts attachment rows
+- it refreshes thread summary
+
+But outbound-specific values differ:
+
+- `direction = 'outbound'`
+- `folder = 'sent'`
+- `provider_message_id` is stored
+- `is_read = 1`
+
+This means sent mail is treated as part of the same unified thread model, not as a separate non-threaded object model.
+
+That is the correct way to build a mail client.
+
+---
+
+## 92. Thread Resolution for Sent Mail
+
+`saveOutgoingMessage()` also calls:
+
+- `ensureThread(...)`
+
+with:
+
+- explicit thread ID when available
+- references/in-reply-to when available
+- normalized subject fallback
+
+So outbound mail can join an existing thread or create a new one.
+
+This matters because reply workflows should not create isolated sent-only fragments when the conversation already exists.
+
+---
+
+## 93. Provider Message ID Storage
+
+When Resend returns a provider-side message identifier, it is stored as:
+
+- `provider_message_id`
+
+That is operationally useful for:
+
+- debugging send-provider issues
+- reconciling provider logs
+- future delivery tracking extensions
+
+It is not strictly necessary for basic UI display, but it is important for real operational tooling.
+
+---
+
+## 94. Draft Deletion After Successful Send
+
+If the outbound send originated from a draft:
+
+- the draft is deleted after successful send
+- realtime event is published indicating draft deletion
+
+This prevents stale drafts from remaining after they were already sent.
+
+Without this, users would see confusing duplicate compose artifacts:
+
+- one real sent message
+- one leftover draft copy
+
+The cleanup behavior is therefore correct and necessary.
+
+---
+
+## 95. Uploads Are a Separate Attachment Acquisition Path
+
+Not all attachments come from inbound MIME.
+
+User-generated attachments use:
+
+- `POST /api/uploads`
+- `handleUpload()`
+
+That route:
+
+1. accepts multipart form data
+2. stores the file in R2 under:
+   - `uploads/${user.id}/...`
+3. returns a lightweight attachment descriptor:
+   - `id`
+   - `fileName`
+   - `mimeType`
+   - `byteSize`
+   - `r2Key`
+   - optional `publicUrl` for images
+
+This attachment descriptor can then be embedded into:
+
+- drafts
+- send payloads
+- HTML editor inline image workflows
+
+So the upload system and inbound attachment system converge on a shared metadata shape.
+
+---
+
+## 96. Inline Image Workflow
+
+If an uploaded file is an image:
+
+- `handleUpload()` returns `publicUrl`
+
+That URL comes from:
+
+- `buildInlineImageUrl(request, env, attachment)`
+
+Then HTML compose can insert that URL into the editor.
+
+Public inline image fetch is served by:
+
+- `GET /api/public/inline-image`
+- `handlePublicInlineImage()`
+
+Validation requires:
+
+- signed token
+- attachment identity
+- correct R2 key
+- actual image content type
+
+The response then adds:
+
+- `Cache-Control: public, max-age=31536000, immutable`
+
+This is a performance-oriented path because inline images are expected to be fetched repeatedly in rendered HTML.
+
+---
+
+## 97. Inbound Attachments vs Compose Uploads
+
+There are two different attachment origins in the system:
+
+### 97.1 Inbound attachments
+
+Source:
+
+- parsed from MIME by `PostalMime`
+
+Storage prefix:
+
+- `attachments/...`
+
+Metadata inserted into:
+
+- `attachments` table tied to a `message_id`
+
+### 97.2 User-uploaded compose attachments
+
+Source:
+
+- `handleUpload()`
+
+Storage prefix:
+
+- `uploads/...`
+
+Metadata first lives:
+
+- in draft `attachment_json`
+- later copied into `attachments` table when mail is sent
+
+This dual model is important because inbound and outbound attachments enter the system differently but need a compatible downstream representation.
+
+---
+
+## 98. Draft Storage Is Compose State, Not Mail State
+
+Function:
+
+- `saveDraft(db, data)`
+
+Drafts are stored with:
+
+- recipient JSON
+- subject
+- text body
+- HTML body
+- attachment JSON
+- optional thread linkage
+
+But drafts are **not** messages.
+
+This distinction matters:
+
+- drafts do not affect thread counts
+- drafts do not create message rows
+- drafts do not appear in sent/inbox/archive/trash
+- drafts are just persisted editor state
+
+Only a successful send turns draft information into a real outbound message.
+
+---
+
+## 99. How the Inbox List Is Kept Fast
+
+The UI does not read all messages just to show inbox rows.
+
+Instead:
+
+- list view reads `threads`
+- detail view reads `messages` plus `attachments`
+
+This is enabled by:
+
+- `refreshThreadSummary()`
+
+Every time a message is inserted or folder/star/read state changes, the thread row is updated to stay list-ready.
+
+That is why the inbox can show:
+
+- subject
+- snippet
+- unread counts
+- latest time
+- star state
+
+without scanning message history on every page load.
+
+---
+
+## 100. Thread Detail Retrieval
+
+Function:
+
+- `getThread(db, userId, threadId)`
+
+This loads:
+
+1. the thread row
+2. all messages in the thread ordered oldest to newest
+3. all attachments for those messages
+4. attachment grouping by `message_id`
+
+Then it returns:
+
+- thread summary fields
+- `messages: [...]`
+- each message including `attachments`
+
+This is the main read shape used by the preview pane.
+
+So the system intentionally has:
+
+- one lightweight list read
+- one heavy detail read
+
+That is a sane mail-client access pattern.
+
+---
+
+## 101. Read / Unread / Star / Folder Actions
+
+Function:
+
+- `applyThreadAction(db, userId, threadId, action)`
+
+Supported actions:
+
+- `mark_read`
+- `mark_unread`
+- `archive`
+- `trash`
+- `restore`
+- `star`
+- `unstar`
+
+Each action updates underlying `messages` rows first.
+
+Then:
+
+- `refreshThreadSummary(db, threadId)`
+
+This ensures thread-level counters and folder state stay in sync with message-level truth.
+
+This is the correct model. Message rows are the source of truth; thread rows are the materialized view.
+
+---
+
+## 102. Trash Is a Staging Area, Not Immediate Destruction
+
+When a thread is trashed:
+
+- message rows move to `folder = 'trash'`
+- thread summary refreshes accordingly
+
+Actual deletion is separate.
+
+Two destructive operations exist:
+
+### 102.1 Delete one trashed thread permanently
+
+- `deleteThreadPermanently()`
+
+### 102.2 Empty all trash
+
+- `purgeTrashFolder()`
+
+Both operations collect storage keys so the Worker can delete raw `.eml` files and attachments from R2 after DB deletion.
+
+That means deletion is not just a SQL operation. It is a coordinated DB + object-storage cleanup.
+
+---
+
+## 103. Permanent Deletion Must Remove Object Storage Too
+
+When trash is emptied or a trashed thread is deleted permanently, the system gathers:
+
+- raw message keys from `messages.raw_r2_key`
+- attachment keys from `attachments.r2_key`
+
+Then the Worker performs:
+
+- `env.MAIL_BUCKET.delete(key)`
+
+This avoids orphaned files in R2 after rows disappear.
+
+This is operationally significant because email data is often split across:
+
+- structured metadata in a relational store
+- raw and binary objects in blob storage
+
+Deleting one without the other causes retention bugs and storage leaks.
+
+---
+
+## 104. Draft Purge Also Cleans Uploaded Objects
+
+Bulk draft deletion:
+
+- `purgeDrafts()`
+
+This inspects `drafts.attachment_json`, extracts any `r2Key`, and returns storage keys for cleanup.
+
+That means compose uploads do not accumulate forever when a user bulk-deletes drafts.
+
+Again, the project consistently tries to treat object cleanup as part of destructive lifecycle operations.
+
+---
+
+## 105. Ingest Failures Are First-Class Operational Records
+
+Function:
+
+- `recordIngestFailure(db, { ... })`
+
+It stores:
+
+- user/domain context when known
+- recipient
+- message ID
+- raw R2 key
+- reason
+- serialized payload
+- first seen / last seen timestamps
+- retry count
+- resolved timestamp
+
+Reasons currently include examples like:
+
+- `alias_not_found`
+- `raw_message_missing`
+
+This table is not incidental. It is the operational audit trail for the mail engine.
+
+Without it, operators would not know:
+
+- which inbound messages failed
+- why they failed
+- whether they were retried
+- whether they later recovered
+
+---
+
+## 106. Failure Records Are Upserted, Not Duplicated Blindly
+
+`recordIngestFailure()` checks for an existing row by:
+
+- `raw_r2_key`
+- `reason`
+
+If found, it updates:
+
+- `last_seen_at`
+- `retry_count`
+- resets `resolved_at` to `NULL`
+
+This means repeated failures on the same raw object do not create endless duplicate rows. They accumulate history on one operational record.
+
+That is the right behavior for a retry-oriented failure queue.
+
+---
+
+## 107. Resolving Failures After Success
+
+After a successful inbound save:
+
+- `resolveIngestFailuresForRawKey(db, rawKey)`
+
+marks unresolved failures for that raw object as resolved.
+
+That means the failure table is not just “error logging.” It tracks lifecycle:
+
+- failed
+- retried
+- recovered
+
+This is a better operational model than append-only logs when the UI needs to surface current health.
+
+---
+
+## 108. Scheduled Retry Logic Uses Exponential Backoff
+
+Function:
+
+- `shouldRetryIngestFailure(failure, now)`
+
+It computes:
+
+- capped exponential backoff
+- starting at 5 minutes
+- doubling with retry count
+- capped at 6 hours
+
+Then `processScheduledIngestRetries(env)`:
+
+1. loads unresolved failures
+2. orders by oldest `last_seen_at`
+3. limits batch size with `MAX_SCHEDULED_INGEST_RETRIES`
+4. retries only eligible failures
+
+This is a reasonable production backoff policy:
+
+- not too aggressive
+- not too stale
+- bounded work per cron run
+
+---
+
+## 109. The Mail Engine Has Two Kinds of Reliability Loops
+
+There are really two reliability loops in this project.
+
+### 109.1 Provider/domain maintenance loop
+
+Triggered by:
+
+- `scheduled()`
+- `refreshUserReliabilityState(env, userId)`
+
+This keeps domain and provider state fresh.
+
+### 109.2 Ingest recovery loop
+
+Triggered by:
+
+- manual retry UI
+- scheduled retry processing
+
+This keeps inbound mail failures from staying dead forever.
+
+Together these make the system more than a CRUD mail UI. It becomes a self-healing operational platform.
+
+---
+
+## 110. Raw MIME Is the Ground Truth for Inbound Forensics
+
+One important design implication of storing `.eml` objects is that the system retains the original message exactly as received.
+
+That enables:
+
+- re-parsing with improved logic in the future
+- manual inspection of edge-case emails
+- evidence preservation when parsing fails
+- more trustworthy debugging than relying only on normalized rows
+
+This is a strong design decision. For inbound mail systems, raw retention is often what separates “works in demos” from “debuggable in production.”
+
+---
+
+## 111. Why `PostalMime` Is a Good Fit Here
+
+The Worker needs:
+
+- MIME parsing in a Workers-compatible runtime
+- extraction of text, HTML, addresses, references, and attachments
+- support for binary attachment content
+
+`PostalMime` gives the system exactly that without introducing a much heavier mail stack.
+
+So the lifecycle is:
+
+- Cloudflare Email Worker receives raw mail
+- raw MIME stored in R2
+- `PostalMime` parses it in queue worker
+- DB persists structured results
+
+This is a coherent and efficient flow.
+
+---
+
+## 112. Where Snippets Come From in Practice
+
+Inbox snippets are not authored by the sender explicitly. They are derived.
+
+For both inbound and outbound messages, the engine stores:
+
+- `buildSnippet(textBody, htmlBody)`
+
+That means the visible list preview is always tied to persisted message content, not computed ad hoc in the browser.
+
+This creates consistency across:
+
+- inbox
+- sent
+- archive
+- trash
+
+and avoids browser-specific HTML stripping differences.
+
+---
+
+## 113. Why Messages Store Both `created_at`, `received_at`, and `sent_at`
+
+The project stores multiple time concepts because they mean different things.
+
+### 113.1 `created_at`
+
+When the application row was inserted.
+
+### 113.2 `received_at`
+
+Meaningful for inbound mail.
+
+### 113.3 `sent_at`
+
+Meaningful for outbound mail.
+
+This distinction is useful for:
+
+- sorting
+- auditability
+- future provider reconciliation
+- distinguishing application persistence time from message lifecycle time
+
+Even when some UI surfaces mostly show one “date,” the backend model is richer.
+
+---
+
+## 114. The Sending Domain Plan Is a Policy Layer
+
+`src/lib/sending.js` is not a transport library. It is a policy library.
+
+It decides:
+
+- which domain is currently allowed to send
+- which domains are receive-only
+- what status message the workspace should show
+
+Key concepts:
+
+- `SEND_CAPABILITY.ENABLED`
+- `SEND_CAPABILITY.RECEIVE_ONLY`
+- `SEND_CAPABILITY.UNAVAILABLE`
+
+This policy is checked during send and also surfaced in bootstrap/UI.
+
+So sending is not simply “if Resend is connected, send.” It is domain-policy aware.
+
+---
+
+## 115. The Inbound and Outbound Pipelines Share the Same Thread Graph
+
+This is one of the most important architectural decisions in the project.
+
+Inbound and outbound mail do **not** live in separate conversation models.
+
+Both eventually write into:
+
+- `messages`
+- `threads`
+- `attachments`
+
+The difference is only:
+
+- direction
+- folder
+- provider metadata
+- source of the bytes
+
+This unified graph makes features like these possible:
+
+- sent replies showing inside the same conversation
+- archive/trash/read/star actions affecting the whole conversation
+- one preview pane regardless of message direction
+
+That is the correct architecture for an email workspace.
+
+---
+
+## 116. Operational Summary of the Full Inbound Lifecycle
+
+A single inbound email moves through these stages:
+
+1. Cloudflare Email Worker receives mail
+2. recipient is matched to alias rule
+3. forwarding happens if configured
+4. raw `.eml` is stored in R2
+5. queue payload is created
+6. queue consumer loads raw object
+7. `PostalMime` parses MIME
+8. attachments are written to R2
+9. `saveInboundMessage()` inserts message rows
+10. thread is created or matched
+11. thread summary is refreshed
+12. prior failure records for the raw key are resolved
+13. realtime event notifies the browser
+
+That is the complete inbound lifecycle.
+
+---
+
+## 117. Operational Summary of the Full Outbound Lifecycle
+
+A single outbound email moves through these stages:
+
+1. browser posts compose payload or draft ID
+2. Worker merges draft state if needed
+3. mailbox and sending domain are validated
+4. recipients are normalized
+5. attachments are validated and converted to signed URLs
+6. HTML body is finalized
+7. Resend API is called
+8. `saveOutgoingMessage()` inserts the outbound message row
+9. thread is created or matched
+10. thread summary is refreshed
+11. source draft is deleted if applicable
+12. realtime updates notify the UI
+
+That is the complete outbound lifecycle.
+
+---
+
+## 118. What Part 5 Should Cover Next
+
+The next section should move away from the raw mail engine and explain the product-control layer around it:
+
+- domain provisioning
+- alias routing rules
+- catch-all behavior
+- Cloudflare Email Routing integration
+- Resend domain verification
+- provider connection storage and encryption
+- diagnostics and reliability health surfaces
+
+Part 4 explained how mail becomes data.
+Part 5 should explain how configuration decides where that mail goes and whether sending is allowed at all.
