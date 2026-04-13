@@ -2,6 +2,10 @@
 
 This document is intentionally written in parts so it can grow without turning into an unreadable dump.
 
+It is also intended to function as a standalone project knowledgebase.
+
+That means the document is not written only for a human reading the source code side-by-side. It is being written so that a future engineer, reviewer, operator, or even an external AI system with access only to this file can still reconstruct how the project works, what services it depends on, and where the important implementation logic lives.
+
 The goal of this file is simple:
 
 1. Explain what this project is.
@@ -9,6 +13,7 @@ The goal of this file is simple:
 3. Explain where the important logic lives in the codebase.
 4. Explain the data model and request flow in a way that a new engineer can follow.
 5. Serve as a durable project map for future maintenance.
+6. Act as a knowledge transfer artifact that can stand in for direct source-code familiarity.
 
 This is **Part 1**, focused on the system overview, runtime topology, configuration, deployment, and top-level module structure.
 
@@ -4553,3 +4558,2524 @@ The next section should move away from the raw mail engine and explain the produ
 
 Part 4 explained how mail becomes data.
 Part 5 should explain how configuration decides where that mail goes and whether sending is allowed at all.
+
+---
+
+# Part 5: The Control Plane — Domains, Aliases, Catch-All Rules, Provider Secrets, Routing Health, and Reliability Diagnostics
+
+Part 4 covered the mail engine itself.
+
+Part 5 covers the **control plane** that tells the engine what to do.
+
+This is the layer that answers questions like:
+
+- which domains belong to the user?
+- which domain is allowed to send?
+- which mailbox should receive inbox copies?
+- which aliases forward externally?
+- how does Cloudflare Email Routing know to invoke this Worker?
+- how does the app know if MX or routing rules are broken?
+- where are provider credentials stored?
+- how are those credentials verified and encrypted?
+
+If the mail engine is the heart, the control plane is the nervous system.
+
+The main files discussed here are:
+
+- `src/worker.js`
+- `src/lib/db.js`
+- `src/lib/providers/cloudflare.js`
+- `src/lib/providers/resend.js`
+- `src/lib/sending.js`
+
+---
+
+## 119. What the Control Plane Is Responsible For
+
+The control plane in this project owns all configuration that sits **around** the mail engine.
+
+That includes:
+
+- provider connectivity
+- domain provisioning state
+- sender-domain policy
+- mailbox creation and defaults
+- alias rule creation and synchronization
+- forwarding destination verification state
+- catch-all configuration
+- routing diagnostics
+- operational degradation visibility
+
+This is why the app is more than “an inbox UI.”
+
+It does not just display messages. It configures an email system that spans:
+
+- Cloudflare Email Routing
+- Cloudflare zones
+- Cloudflare destination addresses
+- Resend sending domains
+- AI provider credentials
+- local D1 state
+
+That is a genuine control plane.
+
+---
+
+## 120. Provider Connections Are First-Class Records
+
+Provider connectivity is persisted in the `provider_connections` table and accessed through:
+
+- `listConnections(db, userId)`
+- `getConnection(db, userId, provider)`
+- `saveConnection(...)`
+
+The app currently treats these providers as first-class:
+
+- `cloudflare`
+- `resend`
+- `gemini`
+- `groq`
+
+Each provider connection stores:
+
+- provider key
+- label
+- encrypted secret
+- metadata JSON
+- status
+- timestamps
+
+The frontend never needs raw secrets back. It receives summarized connection information through:
+
+- `toConnectionSummary(connection)`
+
+That summary exposes:
+
+- `provider`
+- `label`
+- `status`
+- `metadata`
+- `secretMask`
+
+but not the decrypted secret itself.
+
+That is the correct boundary.
+
+---
+
+## 121. Provider Secrets Are Encrypted, Not Stored Plaintext
+
+The Worker protects provider secrets through:
+
+- `requireEncryptionKey(env)`
+- `encryptText(env.APP_ENCRYPTION_KEY, secret)`
+- `decryptText(env.APP_ENCRYPTION_KEY, ciphertext)`
+
+The save path is:
+
+1. provider-specific route validates the submitted token/key
+2. `saveProviderConnection(...)` encrypts it
+3. encrypted value is stored in `provider_connections.secret_ciphertext`
+4. metadata is stored alongside it
+
+The load path is:
+
+- `loadSecret(db, env, userId, provider)`
+
+which:
+
+1. fetches the provider row
+2. decrypts the secret ciphertext
+3. returns a working runtime object with `secret`
+
+This means:
+
+- D1 does not hold plaintext provider credentials
+- runtime code gets plaintext only when actually needed
+
+That is a strong and necessary design choice.
+
+---
+
+## 122. Why `APP_ENCRYPTION_KEY` Matters So Much
+
+The environment variable:
+
+- `APP_ENCRYPTION_KEY`
+
+is one of the most important secrets in the entire project.
+
+It protects:
+
+- provider API keys
+- access tokens
+- any encrypted sensitive connection material
+
+If this key changes without migration:
+
+- existing stored provider secrets become unreadable
+
+If this key is absent:
+
+- provider connection saves and loads fail
+
+So in operational terms, `APP_ENCRYPTION_KEY` is part of the persistence contract, not just a convenience setting.
+
+---
+
+## 123. Cloudflare Connection: What It Enables
+
+The Cloudflare provider route is:
+
+- `handleCloudflareConnection(request, env, user)`
+
+This is the most infrastructure-heavy provider integration in the project.
+
+When a Cloudflare token is connected, the app can:
+
+- list zones
+- enable Email Routing on zones
+- inspect Email Routing DNS state
+- create/update alias worker rules
+- manage catch-all rules
+- ensure forwarding destination addresses
+
+Without a Cloudflare connection, the app cannot truly provision inbox domains.
+
+This provider is therefore foundational to the entire receive side of the product.
+
+---
+
+## 124. Cloudflare Token Verification Flow
+
+When the user submits a Cloudflare token, the Worker does:
+
+1. `verifyCloudflareToken(token)`
+2. `listZones(token)`
+3. stores metadata such as:
+   - token verification payload
+   - zone count
+   - account names discovered from zones
+
+This serves two purposes:
+
+### 124.1 It validates that the token works
+
+The app does not blindly accept any pasted token.
+
+### 124.2 It captures useful operator metadata
+
+The UI can later show that the connection is attached to a real account with visible zones.
+
+This is a good operational pattern because it reduces false-positive “connected” states.
+
+---
+
+## 125. Resend Connection: What It Enables
+
+The Resend provider route is:
+
+- `handleResendConnection(request, env, user)`
+
+This provider controls the send side of the platform.
+
+Once connected, the app can:
+
+- list Resend domains
+- verify API key validity
+- map app domains to Resend domain records
+- send outbound email
+- decide which domain is actually send-enabled
+
+Without Resend:
+
+- inbox and routing can still exist
+- sending cannot be enabled
+
+That makes Resend the outbound transport authority of the system.
+
+---
+
+## 126. Resend Metadata Synchronization
+
+When Resend is connected, the system can refresh domain metadata through:
+
+- `listResendDomains(apiKey)`
+- `syncResendDomainMetadata(db, userId, domains, resendDomains)`
+
+This function compares app-side domain rows with live Resend domain records by hostname:
+
+- `getResendDomainHostname(domain)`
+- `getResendDomainStatus(domain)`
+
+It updates app-side domain fields like:
+
+- `resend_domain_id`
+- `resend_status`
+
+This is important because the app’s domain table is not assumed to be the sole source of truth. It is reconciled against Resend’s real state.
+
+---
+
+## 127. AI Provider Connections Are Simpler but Still Part of the Control Plane
+
+The AI provider routes are:
+
+- `handleGeminiConnection(...)`
+- `handleGroqConnection(...)`
+
+These providers do not control mail routing, but they still belong to the control plane because they control product capability.
+
+Gemini metadata includes things like:
+
+- default model
+- model count
+- available model list
+
+Groq metadata includes:
+
+- active model
+- model count
+
+These are stored as connection metadata and surfaced in bootstrap/UI.
+
+So the control plane is not only about domains. It also covers feature-enabling providers.
+
+---
+
+## 128. The Domain Record Is the Main Mail-Infrastructure Unit
+
+Domain persistence lives in:
+
+- `createDomain(...)`
+- `updateDomain(...)`
+- `listDomains(...)`
+- `getDomain(...)`
+
+A domain row carries several different kinds of state at once:
+
+### 128.1 Cloudflare identity
+
+- `zone_id`
+- `account_id`
+- `hostname`
+
+### 128.2 Resend identity
+
+- `resend_domain_id`
+- `resend_status`
+
+### 128.3 Sending policy
+
+- `send_capability`
+
+### 128.4 Routing health
+
+- `routing_status`
+- `routing_error`
+- `routing_checked_at`
+
+### 128.5 Catch-all configuration
+
+- `catch_all_mode`
+- `catch_all_mailbox_id`
+- `catch_all_forward_json`
+
+### 128.6 Ingest destination reference
+
+- `ingest_destination_id`
+
+This is why the domain table is so central. It is where infrastructure, policy, and diagnostics meet.
+
+---
+
+## 129. What Happens When a Domain Is Provisioned
+
+Domain creation happens in:
+
+- `handleDomains(request, env, user, pathParts)`
+
+on:
+
+- `POST /api/domains`
+
+The flow is:
+
+1. load Cloudflare connection
+2. fetch zones
+3. confirm selected zone exists
+4. derive hostname and default mailbox local part
+5. try `enableEmailRouting(...)`
+6. create a `domains` row
+7. create an initial mailbox
+8. reconcile sending-domain state using Resend if available
+
+This is a strong design because a new domain is not merely inserted into D1. The app tries to perform the relevant infrastructure action immediately:
+
+- enable Cloudflare Email Routing on the zone
+
+Then it records whether that succeeded.
+
+---
+
+## 130. Email Routing Enablement Is Treated as Real Infrastructure State
+
+The app uses:
+
+- `enableEmailRouting(token, zoneId)`
+- `getEmailRouting(token, zoneId)`
+- `getEmailRoutingDns(token, zoneId)`
+
+This matters because the app does **not** pretend that a domain is “ready” just because a row exists locally.
+
+Instead, it records:
+
+- whether routing is enabled
+- whether MX is healthy
+- whether Worker-based routing rules exist
+- whether catch-all is configured
+
+This is a mature control-plane choice. It treats Cloudflare as the real infrastructure source of truth and D1 as the app’s synchronized state.
+
+---
+
+## 131. Mailboxes Are Sender and Delivery Targets
+
+Mailbox persistence uses:
+
+- `createMailbox(...)`
+- `updateMailbox(...)`
+- `deleteMailbox(...)`
+- `listMailboxesPage(...)`
+
+A mailbox serves at least two roles:
+
+### 131.1 Inbox delivery target
+
+Aliases can deliver into a mailbox.
+
+### 131.2 Sender identity
+
+One mailbox on a domain can be marked:
+
+- `is_default_sender = 1`
+
+Mailboxes also carry:
+
+- display name
+- `signature_html`
+- `signature_text`
+
+So a mailbox is not just an address row. It is a user-facing compose identity.
+
+---
+
+## 132. Why Mailbox Deletion Has Dependency Checks
+
+Before deleting a mailbox, the Worker uses:
+
+- `getMailboxDependencySummary(...)`
+
+and blocks deletion if the mailbox is still used by:
+
+- inbox aliases
+- catch-all delivery
+
+This is important because mailbox deletion could otherwise create broken routing configuration.
+
+The app chooses correctness over permissiveness here:
+
+- reassign routing first
+- delete mailbox second
+
+That is the right order.
+
+---
+
+## 133. Alias Rules Are the Core Routing Configuration
+
+Alias persistence uses:
+
+- `createAliasRule(...)`
+- `updateAliasRule(...)`
+- `deleteAliasRule(...)`
+- `getAliasRuleByRecipient(...)`
+- `listAliasRulesPage(...)`
+
+An alias rule defines:
+
+- which domain it belongs to
+- whether it is explicit or catch-all
+- which mailbox receives inbox copies
+- whether forwarding occurs
+- which forward destinations are used
+- which Cloudflare routing rule is attached
+- whether the alias is enabled
+
+This is the single most important per-recipient routing object in the app.
+
+---
+
+## 134. Alias Modes Are Delivery Policy
+
+Alias rules use the normalized delivery modes from `src/lib/mail.js`:
+
+- `inbox_only`
+- `forward_only`
+- `inbox_and_forward`
+
+These modes are not cosmetic labels. They directly change runtime behavior in the Worker email handler:
+
+- whether inbox ingestion occurs
+- whether Cloudflare forwarding occurs
+- whether both happen
+
+This means the control plane stores policy in a compact but meaningful way.
+
+---
+
+## 135. Explicit Alias vs Catch-All Alias
+
+The app distinguishes between:
+
+### 135.1 Explicit alias
+
+Example:
+
+- `hello@example.com`
+
+These use Cloudflare rule matchers like:
+
+- literal `to = hello@example.com`
+
+### 135.2 Catch-all alias
+
+Example:
+
+- `*@example.com`
+
+These use Cloudflare’s catch-all rule surface.
+
+The route payload builder:
+
+- `buildWorkerRulePayload(domain, { isCatchAll, localPart, enabled })`
+
+creates different matcher shapes depending on which kind of alias is being configured.
+
+That distinction is operationally real, not merely UI-level.
+
+---
+
+## 136. How Alias Rules Are Reflected into Cloudflare
+
+Whenever aliases are created or updated, the app pushes that configuration into Cloudflare Email Routing.
+
+Functions used:
+
+- `upsertRoutingRule(...)`
+- `updateCatchAllRule(...)`
+- `deleteRoutingRule(...)`
+
+For explicit aliases:
+
+- the app creates or updates a Worker action rule
+
+For catch-all:
+
+- the app updates the dedicated catch-all rule
+
+In both cases, the action points to:
+
+- `EMAIL_WORKER_DESTINATION = 'alias-forge-2000'`
+
+This is one of the most important design facts in the whole project:
+
+> D1 alias rules are not merely informational. They are synchronized into real Cloudflare routing rules that invoke the Worker.
+
+That is what makes the product actually receive mail.
+
+---
+
+## 137. `reconcileAliasRoutes()` Is the Routing Repair Function
+
+The main Cloudflare synchronization routine is:
+
+- `reconcileAliasRoutes(db, env, userId, options = {})`
+
+This function:
+
+1. loads Cloudflare secret
+2. loads all domains and aliases
+3. groups aliases by domain
+4. builds the expected Worker routing payload for each alias
+5. writes those rules into Cloudflare
+6. marks domain routing health accordingly
+7. emits realtime routing events
+
+This is the app’s “repair routing” function.
+
+It is used after provider connection setup and also from explicit repair actions.
+
+That means the app has a built-in way to resynchronize local alias state with Cloudflare if the external control plane drifts.
+
+---
+
+## 138. Catch-All Configuration Lives in Two Places
+
+Catch-all state is stored:
+
+### 138.1 In the alias rule
+
+The catch-all alias row has:
+
+- `is_catch_all = 1`
+- mode
+- mailbox
+- forwarding targets
+
+### 138.2 In the domain record
+
+The domain also stores:
+
+- `catch_all_mode`
+- `catch_all_mailbox_id`
+- `catch_all_forward_json`
+
+Why both?
+
+- alias rule represents the routing object
+- domain row represents the domain-level summary/policy snapshot
+
+This duplication makes diagnostics and UI easier, especially when the domain screen wants to show catch-all state without scanning every alias on demand.
+
+---
+
+## 139. Forward Destinations Are Separate Managed Records
+
+Forwarding destinations are stored independently through:
+
+- `upsertForwardDestination(...)`
+- `listForwardDestinations(...)`
+- `listForwardDestinationsPage(...)`
+
+A forward destination tracks:
+
+- destination email
+- display name
+- Cloudflare destination ID
+- verification state
+
+This is an important design choice.
+
+Instead of embedding arbitrary forward emails directly into alias rules, the app creates reusable destination records. That allows:
+
+- verification tracking
+- reuse across aliases
+- cleaner control-plane data
+
+This also matches how Cloudflare Email Routing models destination addresses.
+
+---
+
+## 140. Why Forwarding Requires Verified Destinations
+
+When aliases are created or updated, the Worker checks whether selected destinations are verified.
+
+For forwarding modes:
+
+- `forward_only`
+- `inbox_and_forward`
+
+the app requires:
+
+- at least one verified destination
+
+This prevents a bad configuration where an alias claims to forward but all targets are unverified and therefore non-functional.
+
+The app explicitly blocks that state rather than letting the user create an illusion of correctness.
+
+---
+
+## 141. Cloudflare Destination Address Provisioning
+
+Forward destination creation can optionally use:
+
+- `ensureDestinationAddress(token, accountId, email)`
+
+That function:
+
+1. lists existing Cloudflare destination addresses
+2. checks whether one already exists for the email
+3. creates it if missing
+
+This means the app can align local forwarding records with Cloudflare’s account-level destination model.
+
+Again, the same general control-plane theme appears:
+
+- local row
+- external provider state
+- synchronization between the two
+
+---
+
+## 142. `getAliasRuleByRecipient()` Is the Runtime Resolution Bridge
+
+This function sits at the boundary between control plane and mail engine:
+
+- `getAliasRuleByRecipient(db, recipientAddress)`
+
+It implements the runtime lookup order:
+
+1. exact local-part match for the domain
+2. catch-all match for the domain
+
+This is what lets the Worker email handler translate a raw SMTP envelope recipient into:
+
+- mailbox target
+- alias mode
+- forwarding destinations
+- domain context
+
+So this function is one of the most important bridges in the whole application:
+
+- configuration data in
+- runtime mail behavior out
+
+---
+
+## 143. Domain Health Is Not Just a Boolean
+
+The app does not reduce routing health to a single yes/no field.
+
+`collectDomainDiagnostics(...)` builds a diagnostics object containing:
+
+- `emailWorkerBound`
+- `mxStatus`
+- `catchAllStatus`
+- `catchAllPreview`
+- `routingRuleStatus`
+- `routingReady`
+- `dnsIssues`
+- `resendDnsRecords`
+- `resendDnsStatus`
+- `lastRoutingCheckAt`
+- `diagnosticError`
+
+This is significant because real email infrastructure can fail in several distinct ways:
+
+- Email Routing disabled
+- MX records missing
+- explicit alias rules missing
+- catch-all missing
+- Resend DNS incomplete
+- Cloudflare API error during inspection
+
+The app preserves that nuance instead of flattening it prematurely.
+
+---
+
+## 144. How Cloudflare Routing Diagnostics Work
+
+Inside `collectDomainDiagnostics()`, the Worker asks Cloudflare for:
+
+- current Email Routing state
+- required routing DNS records
+- current routing rules
+- current catch-all rule
+
+Then it derives:
+
+### 144.1 `emailWorkerBound`
+
+True when Email Routing is enabled and reports ready.
+
+### 144.2 `mxStatus`
+
+Derived from Cloudflare DNS summary for Email Routing.
+
+### 144.3 `routingRuleStatus`
+
+Whether the number of active Worker rules is sufficient for expected aliases.
+
+### 144.4 `catchAllStatus`
+
+Whether the catch-all route is actually configured when one is expected.
+
+### 144.5 `routingReady`
+
+A synthesized readiness state combining:
+
+- worker bound
+- MX ready
+- explicit rules configured
+- catch-all configured if required
+
+This is a robust diagnostic approach because readiness is multi-factor, not a single provider flag.
+
+---
+
+## 145. `catchAllPreview` Exists To Explain Configuration Visually
+
+One of the most useful small details in diagnostics is:
+
+- `catchAllPreview`
+
+Example shape:
+
+- `*@example.com -> admin@example.com`
+
+This is not infrastructural state in itself. It is a human-readable summary of how the catch-all is intended to behave.
+
+That matters because control planes are easier to trust when the user can visually confirm:
+
+- what the wildcard does
+- where it goes
+
+This is a small UX detail, but it reflects a good systems-thinking mindset.
+
+---
+
+## 146. Diagnostics Write Back Into the Domain Row
+
+`collectDomainDiagnostics()` does not merely return data to the caller.
+
+It also calls:
+
+- `markDomainRoutingHealth(db, userId, domain.id, { ... })`
+
+This updates persistent domain health fields such as:
+
+- `routing_status`
+- `routing_error`
+- `routing_checked_at`
+
+That means diagnostics affect stored domain state, not just the temporary HTTP response.
+
+So the domain table is partly an operational cache of the most recent routing-health verdict.
+
+---
+
+## 147. Resend DNS Verification Is Also Surfaced Inline
+
+If a domain is linked to Resend:
+
+- `getResendDomain(apiKey, resendDomainId)`
+
+is used during diagnostics to derive:
+
+- `resendDnsRecords`
+- `resendDnsStatus`
+
+That is important because the app does not force the operator to jump out to the Resend dashboard to understand whether SPF/DKIM-style domain requirements are satisfied.
+
+Instead, the control plane brings those records into the app’s own domain view.
+
+That is a strong product decision because it keeps infrastructure troubleshooting inside the workspace.
+
+---
+
+## 148. `reconcileSendingDomainState()` Is the Sending Policy Brain
+
+One of the most important control-plane functions is:
+
+- `reconcileSendingDomainState(db, env, userId, options = {})`
+
+This function decides:
+
+- which domains exist
+- which domain is selected for sending
+- which domain is actually send-enabled
+- what status message should be shown to the user
+
+This is the policy layer between:
+
+- Resend connectivity
+- Resend domain metadata
+- user selection
+- domain state in D1
+
+Without this function, sending policy would be scattered and error-prone.
+
+---
+
+## 149. The Selected Sending Domain Is Not Arbitrary
+
+The user record can store:
+
+- `selected_sending_domain_id`
+
+But the app does not trust that blindly.
+
+`resolveSelectedSendingDomainId(...)` verifies:
+
+- the selected domain still exists
+- if not, it clears the selection
+- if no selection exists and there is exactly one valid candidate, it auto-selects it
+
+This is a thoughtful control-plane behavior because it avoids stale references and reduces unnecessary manual selection when the choice is obvious.
+
+---
+
+## 150. The App Distinguishes Three Send Capabilities
+
+In `src/lib/sending.js`, the effective send state is one of:
+
+- `send_enabled`
+- `receive_only`
+- `send_unavailable`
+
+Why this matters:
+
+### `send_enabled`
+
+The domain is the active selected sending domain and Resend is connected.
+
+### `receive_only`
+
+The domain exists for inbox/routing use but is not the active send domain.
+
+### `send_unavailable`
+
+The domain cannot currently be used to send because the required outbound configuration is missing or inactive.
+
+This tri-state model is better than a plain boolean because it captures both operational and policy differences.
+
+---
+
+## 151. Bootstrap Returns Control-Plane Summaries
+
+The UI does not rebuild this logic from scratch client-side.
+
+`bootstrapData(...)` returns:
+
+- user
+- connection summaries
+- hydrated domains
+- mailbox page
+- alert counts
+- folder counts
+- mailbox unread counts
+- selected sending domain ID
+- sending domain ID
+- sending status message
+
+This means the first authenticated page load already contains:
+
+- provider readiness
+- domain diagnostics
+- folder summaries
+- mailbox summary counts
+
+The frontend does not have to fire many independent startup requests to become useful.
+
+That is a good control-plane bootstrap design.
+
+---
+
+## 152. `alertCounts` Is an Operational Summary Surface
+
+The app computes alert counts through:
+
+- `getAlertCounts(db, userId)`
+
+This currently summarizes at least:
+
+- degraded routing domains
+- unresolved ingest failures
+
+This is important because the control plane is not just configuration. It also surfaces operational trouble.
+
+So the user can see not only what is configured, but also what is broken.
+
+---
+
+## 153. Folder Counts and Mailbox Unread Counts Are Control-Plane Summaries Too
+
+Functions:
+
+- `getFolderCounts(db, userId)`
+- `getMailboxUnreadCounts(db, userId)`
+
+Even though they are driven by mail data, they play a control-plane role in the bootstrap response:
+
+- they shape the high-level workspace navigation
+- they tell the sidebar what to badge
+- they provide user-facing visibility into overall system state
+
+So they sit at the boundary between message engine and application shell.
+
+---
+
+## 154. Repair Routing Is an Explicit Operator Action
+
+The Worker provides:
+
+- `POST /api/domains/:id/repair-routing`
+
+which calls:
+
+- `reconcileAliasRoutes(...)`
+
+This is a valuable operational affordance.
+
+It means the app is designed with the expectation that external routing state can drift or fail and sometimes needs manual reapplication.
+
+That is realistic. Production email infrastructure drifts. A good control plane includes repair operations, not just create/update screens.
+
+---
+
+## 155. Refresh Routing Is Different From Repair Routing
+
+The app also provides:
+
+- `POST /api/domains/:id/refresh`
+
+This is different from repair.
+
+### Refresh
+
+Reads current provider state again and updates local diagnostics.
+
+### Repair
+
+Actively reapplies the expected rule configuration to Cloudflare.
+
+This distinction is important:
+
+- refresh is inspection
+- repair is mutation
+
+A good control plane keeps those separate.
+
+---
+
+## 156. Selecting the Sending Domain Is an Explicit Domain Action
+
+The Worker exposes:
+
+- `POST /api/domains/:id/select-sending`
+
+This updates:
+
+- `users.selected_sending_domain_id`
+
+Then it reruns sending-state reconciliation.
+
+This means sending policy is not a hidden implicit side effect. It is a user-visible domain selection action stored in user state and reflected back into domain capabilities.
+
+That is the right mental model for a multi-domain workspace.
+
+---
+
+## 157. Why the App Keeps Routing Status Messages
+
+When routing or sending is not ready, the system generates human-readable guidance through functions like:
+
+- `getWorkspaceSendingStatus(...)`
+
+and through diagnostics-derived error text.
+
+Examples of what these messages communicate:
+
+- connect Resend
+- choose a provisioned sending domain
+- MX records are not ready
+- routing rules are missing
+- catch-all is not configured
+
+This matters because control-plane systems often fail at translation: they know what is broken, but do not explain what action is needed.
+
+This app makes a serious attempt to bridge that gap.
+
+---
+
+## 158. Provider Connections Influence More Than Their Own Screens
+
+A provider connection update does not stay local to its own page.
+
+Examples:
+
+### Cloudflare connection
+
+After save:
+
+- alias routes are reconciled
+
+### Resend connection
+
+After save:
+
+- sending-domain state is reconciled
+- Resend domain metadata may be refreshed
+
+So provider settings are not isolated forms. They actively mutate the rest of the system’s operational model.
+
+That is exactly what a control plane should do.
+
+---
+
+## 159. The Control Plane Also Uses Realtime Events
+
+When routing changes or degrades, the Worker publishes events such as:
+
+- `routing.updated`
+- `routing.degraded`
+
+When ingest retries happen:
+
+- `ingest.retrying`
+- `ingest.failed`
+
+This means operational state changes can propagate into the UI immediately instead of requiring a manual refresh.
+
+That is especially useful for:
+
+- domain provisioning
+- alias repair
+- bulk destructive actions
+- failure recovery
+
+The control plane therefore has a live-feedback loop, not just static forms.
+
+---
+
+## 160. Why Cloudflare Is the Canonical Control Surface
+
+This project has been intentionally moved away from Vercel as the operational host.
+
+The canonical infrastructure now lives in Cloudflare:
+
+- Worker runtime
+- D1
+- R2
+- Email Worker entrypoint
+- Queue
+- Durable Object
+- custom domain binding
+
+That matters for the control plane because:
+
+- domain/routing actions happen against Cloudflare APIs
+- the actual inbound mail runtime is Cloudflare
+- the same platform owns the Worker that executes routing outcomes
+
+This reduces split-brain operational complexity.
+
+---
+
+## 161. What the Control Plane Protects the User From
+
+The app’s control-plane logic exists largely to stop users from getting into misleading states such as:
+
+- domain exists locally but Email Routing is not enabled
+- alias exists locally but Cloudflare rule is missing
+- forwarding configured but no verified destination exists
+- mailbox deleted while aliases still depend on it
+- Resend connected but no valid send-enabled domain selected
+- sending attempted from a receive-only domain
+
+This is a key design quality of the system.
+
+It tries to prevent invalid infrastructure states, not merely display them after the fact.
+
+---
+
+## 162. Control Plane vs Mail Engine: The Boundary
+
+The cleanest way to understand the project after Parts 4 and 5 is:
+
+### Mail engine
+
+Responsible for:
+
+- receiving mail
+- parsing MIME
+- threading
+- attachments
+- sending
+- retries
+
+### Control plane
+
+Responsible for:
+
+- determining where mail should go
+- deciding which domains are operationally valid
+- synchronizing infrastructure with Cloudflare and Resend
+- storing and protecting provider credentials
+- surfacing diagnostics and degradation
+
+The two layers are tightly integrated, but conceptually distinct.
+
+That distinction is what makes the project understandable.
+
+---
+
+## 163. Practical Summary of the Domain-and-Routing Lifecycle
+
+A domain in this system typically goes through this lifecycle:
+
+1. user connects Cloudflare
+2. user provisions a domain from a real zone
+3. Worker enables Email Routing on that zone
+4. app creates default mailbox
+5. user connects Resend
+6. app synchronizes matching Resend domain metadata
+7. user creates explicit aliases and/or catch-all
+8. app writes Cloudflare Worker routing rules
+9. diagnostics verify MX, worker binding, catch-all, and Resend DNS
+10. user selects one sending domain
+11. domain becomes:
+   - receive-ready
+   - or receive-and-send-ready
+
+That is the full configuration lifecycle around the mail engine.
+
+---
+
+## 164. What Part 6 Should Cover Next
+
+The next section should move into the frontend application layer in more concrete detail:
+
+- `useAppController()` state model
+- compose modal lifecycle
+- thread list and preview behavior
+- autosave, pagination, realtime subscription handling
+- notification system
+- how the React UI maps onto the Worker APIs
+
+Part 5 explained the infrastructure control plane.
+Part 6 should explain how the browser orchestrates and presents all of it.
+
+---
+
+## Part 6: Frontend State, UI Orchestration, Compose Lifecycle, and Realtime Browser Behavior
+
+Part 6 explains the browser application in detail.
+
+If Parts 1 through 5 explained what the system is, where data lives, how mail flows through the backend, and how the control plane keeps infrastructure correct, then Part 6 explains how the user actually experiences all of that through the React application.
+
+The most important source files for this section are:
+
+- `src/App.tsx`
+- `src/hooks/useAppController.tsx`
+- `src/components/AppShell.tsx`
+- `src/components/SidebarNav.tsx`
+- `src/components/TopHeader.tsx`
+- `src/components/ThreadList.tsx`
+- `src/components/ThreadPreview.tsx`
+- `src/components/ComposeModal.tsx`
+- `src/components/ActionNotifications.tsx`
+- `src/views/*.tsx`
+- `src/types.ts`
+
+This is the browser orchestration layer.
+
+It is where:
+
+- login starts
+- runtime configuration is loaded
+- Firebase session state is attached to the app
+- workspace bootstrap data is fetched
+- thread lists are paginated and displayed
+- realtime updates are consumed
+- compose state is maintained
+- autosave happens
+- AI actions are run
+- user-visible notifications are generated
+
+---
+
+## 165. The Frontend Is Not a Thin Renderer
+
+The React frontend is not a passive view over server data.
+
+It is a fairly opinionated client-side application with its own orchestration responsibilities.
+
+It does all of the following:
+
+- owns the active workspace view (`mail`, `connections`, `domains`, `aliases`, `destinations`, `drafts`)
+- owns the active mail folder (`inbox`, `sent`, `archive`, `trash`)
+- owns the selected mailbox filter
+- owns the selected thread
+- owns pagination cursors
+- owns compose modal seed state
+- owns loading and notification states
+- owns login bootstrapping and session transitions
+- owns the realtime socket lifecycle
+
+This means the frontend is not just a bundle of presentational components.
+
+The true brain of the browser application is `src/hooks/useAppController.tsx`.
+
+That file acts as the application controller, state coordinator, API client wrapper, auth coordinator, and side-effect hub.
+
+---
+
+## 166. `src/types.ts`: The Shared Browser-Side Language
+
+Before looking at the controller, it is important to understand that `src/types.ts` defines the vocabulary that almost every React component depends on.
+
+It defines:
+
+- top-level navigation IDs:
+  - `ViewId`
+  - `FolderId`
+- compose state modes:
+  - `ComposeMode`
+  - `HtmlPanelMode`
+- runtime bootstrap contracts:
+  - `RuntimeConfig`
+  - `RuntimeFirebaseConfig`
+- identity contract:
+  - `UserSummary`
+- data records:
+  - `DomainRecord`
+  - `MailboxRecord`
+  - `HtmlTemplateRecord`
+  - `ForwardDestinationRecord`
+  - `AliasRuleRecord`
+  - `DraftRecord`
+  - `UploadedAttachment`
+  - `ThreadSummary`
+  - `MessageRecord`
+  - `ThreadDetail`
+  - `IngestFailureRecord`
+- summary types:
+  - `AlertCounts`
+  - `FolderCounts`
+  - `MailboxUnreadCounts`
+- aggregate payloads:
+  - `BootPayload`
+  - `WorkspaceData`
+  - `CursorState`
+- editor state:
+  - `ComposeDraft`
+
+This is important for knowledge transfer because it tells you how the browser mentally models the system.
+
+For example:
+
+- `WorkspaceData` is the browser’s cached copy of admin/configuration resources
+- `CursorState` stores the next-page cursors for every paginated list
+- `ThreadDetail` extends `ThreadSummary` and adds concrete `messages`
+- `ComposeDraft` is not just a database draft row; it is the normalized editor state the modal works from
+
+When trying to understand any component, `src/types.ts` should be treated as the canonical contract file.
+
+---
+
+## 167. `src/App.tsx`: The Browser Entry and View Router
+
+`src/App.tsx` is the visible entry point of the React application.
+
+Its job is not to contain business logic.
+
+Instead, it:
+
+1. calls `useAppController()`
+2. classifies controller status strings into:
+   - active progress banners
+   - dismissible success/info/error toasts
+   - “clear” states that should remove a prior banner
+3. renders one of three high-level application shells:
+   - boot screen
+   - login screen
+   - signed-in workspace shell
+4. mounts the global compose modal regardless of the current page
+
+This structure matters because it explains why compose can be opened from many places and still behave like a single global editor: the compose modal is rooted at the app level, not buried inside an individual page.
+
+`App.tsx` also explains why status messages feel consistent across the app.
+
+The code contains a `classifyStatus()` function that turns raw controller text into user-visible UI semantics.
+
+Examples:
+
+- `Sending...`, `Saving...`, `Loading...` become active activity banners
+- `Draft saved.` or `Message sent.` become short success toasts
+- `Popup blocked...` becomes a warning toast
+- strings that look like failures become error toasts
+
+This is a simple but important design decision: the application uses one shared text-driven notification channel instead of every component inventing its own local spinner/toast logic.
+
+---
+
+## 168. The Three Top-Level Browser States
+
+At runtime, the entire frontend really lives in one of three coarse states.
+
+### State 1: booting
+
+Rendered when:
+
+- `controller.booting === true`
+
+Visible behavior:
+
+- a dedicated boot screen
+- no login form yet
+- no workspace shell yet
+
+Meaning:
+
+- runtime config is still being fetched
+- Firebase auth is still initializing
+- the app has not yet determined whether the user is signed in
+
+### State 2: logged out
+
+Rendered when:
+
+- `controller.booting === false`
+- `controller.user === null`
+
+Visible behavior:
+
+- login card
+- `Sign in with Google` button
+- helper copy from `controller.loginMessage`
+
+Meaning:
+
+- the runtime configuration exists
+- Firebase is initialized
+- no active Firebase user is currently present
+
+### State 3: logged in
+
+Rendered when:
+
+- `controller.user !== null`
+
+Visible behavior:
+
+- `AppShell`
+- active workspace content
+- realtime status footer
+- compose modal support
+
+Meaning:
+
+- the controller has a Firebase ID token
+- bootstrap data has been fetched
+- the browser can call authenticated Worker APIs
+
+This 3-state model is the cleanest way to understand the entire frontend flow.
+
+---
+
+## 169. `useAppController()`: The Browser-Side Control Tower
+
+`useAppController()` is the most important frontend module in the entire project.
+
+It owns both state and behavior.
+
+Key state it stores:
+
+- `runtime`
+- `user`
+- `status`
+- `booting`
+- `loginMessage`
+- `view`
+- `folder`
+- `mailboxId`
+- `searchQuery`
+- `data`
+- `zones`
+- `threads`
+- `selectedThread`
+- `composeSeed`
+- `alertCounts`
+- `folderCounts`
+- `mailboxUnreadCounts`
+- `cursors`
+- `selectedSendingDomainId`
+- `sendingDomainId`
+- `sendingStatusMessage`
+- `realtimeStatus`
+
+Key refs it stores:
+
+- `authRef`
+- `runtimeRef`
+- `tokenRef`
+- `googleScriptPromiseRef`
+- `realtimeSocketRef`
+- `reconnectTimerRef`
+- `reconnectAttemptsRef`
+- `realtimeSessionRef`
+
+That split between state and refs matters:
+
+- React state is used for values that should trigger UI updates
+- refs are used for persistent imperative objects such as WebSocket handles, Firebase auth objects, token caches, and one-time script loader promises
+
+This file is effectively the browser’s operational state machine.
+
+---
+
+## 170. Runtime Configuration Boot
+
+The frontend does not hardcode its live API base.
+
+Instead, `useAppController()` fetches runtime configuration from the Worker and then stores it in `runtime` and `runtimeRef`.
+
+The important helper functions are:
+
+- `fetchWithTimeout()`
+- `fetchRuntimeConfigFrom()`
+- `resolveApiUrl()`
+
+The boot sequence eventually calls `fetchRuntimeConfig()`, which reaches `/api/runtime-config`.
+
+The runtime payload includes:
+
+- Firebase config
+- Google client ID
+- app name
+- API base URL
+
+This makes the browser deployment-aware.
+
+It can run on the custom domain or Workers subdomain without recompiling a different frontend bundle just to swap origins.
+
+This is operationally important for Cloudflare-only hosting.
+
+---
+
+## 171. Firebase Initialization and Identity State
+
+The browser still uses Firebase as the session authority.
+
+The initialization path is:
+
+1. runtime config fetched
+2. `normalizeFirebaseConfig()` makes sure missing pieces are filled from fallback constants
+3. `ensureFirebaseAuth()` initializes the Firebase app if necessary
+4. `onIdTokenChanged()` subscribes to auth changes
+
+That final subscription is the most important piece.
+
+`onIdTokenChanged()` is what bridges browser auth state into the rest of the app.
+
+When Firebase reports `null` user:
+
+- `user` is cleared
+- `tokenRef` is cleared
+- workspace data resets to empty state
+- thread list is cleared
+- selected thread is cleared
+- compose seed is cleared
+- counts and cursors reset
+- realtime is disconnected
+- login message becomes `Sign in to continue.`
+
+When Firebase reports a user:
+
+- a fresh ID token is requested
+- `tokenRef` is updated
+- `booting` becomes `false`
+- bootstrap data is loaded from the Worker
+- the user-facing workspace is hydrated
+- realtime is connected
+
+This is why the app can recover cleanly from sign-out without a page refresh.
+
+The entire browser session is rebuilt from that auth callback.
+
+---
+
+## 172. Google Sign-In Flow
+
+The browser-side Google sign-in entry point is `signInWithGoogle()`.
+
+In the current implementation, this function:
+
+1. ensures Firebase auth exists
+2. loads the Google Identity Services script if needed
+3. requests a Google access token using the configured web client
+4. builds a Firebase `GoogleAuthProvider` credential from that token
+5. signs into Firebase with `signInWithCredential()`
+
+This matters conceptually because the app treats Google as the identity provider and Firebase as the session container.
+
+In other words:
+
+- Google authenticates the person
+- Firebase turns that result into a browser session
+- the Worker trusts Firebase ID tokens for API access
+
+Error handling here is intentionally user-facing.
+
+The controller explicitly handles:
+
+- popup closed
+- popup blocked
+- unauthorized domain
+- generic Google/Firebase failures
+
+And it writes these into:
+
+- `loginMessage`
+- `status`
+
+That is why login failures can surface in both the login card helper area and the global notification system.
+
+---
+
+## 173. The API Wrapper and Why the Controller Owns It
+
+`useAppController()` also owns the generic authenticated API wrapper.
+
+That wrapper is responsible for:
+
+- resolving absolute Worker URLs with `resolveApiUrl()`
+- attaching Firebase ID tokens as bearer credentials
+- normalizing network error handling
+- throwing readable errors for non-OK responses
+
+This design keeps components simple.
+
+A component like `DraftsView` or `ThreadList` does not know anything about:
+
+- token refresh
+- API base URLs
+- runtime config
+- auth headers
+
+Instead, components call controller methods, and controller methods call the API wrapper.
+
+That separation is a major reason the frontend remains understandable despite having many capabilities.
+
+---
+
+## 174. Bootstrap: How the Browser Hydrates the Workspace
+
+The main workspace hydration function is `refreshBootstrap()`.
+
+Its responsibilities include:
+
+- calling `/api/bootstrap`
+- updating `user`
+- updating selected sending-domain IDs
+- updating sending status messaging
+- updating alert counts
+- updating folder counts
+- updating mailbox unread counts
+- merging configuration data into `data`
+
+If the active view is mail and bootstrap is not skipping thread hydration, the controller also refreshes the thread list after bootstrap.
+
+The important conceptual point is:
+
+`bootstrap` is the frontend’s “get me back to a coherent workspace” API.
+
+It is not just a login call.
+
+It is used after:
+
+- sign-in
+- major configuration changes
+- refresh actions
+- some repair flows
+
+This gives the browser a consistent way to reconcile its local state with the backend’s current truth.
+
+---
+
+## 175. Thread List Loading and Pagination
+
+Mail threads are loaded through `loadThreadsAction()`.
+
+That function accepts:
+
+- target folder
+- target mailbox ID
+- target search query
+- options for selection preservation and cursor-based append mode
+
+It constructs `/api/threads` queries with:
+
+- `folder`
+- `limit`
+- `mailboxId`
+- `query`
+- `cursor`
+
+Then it:
+
+1. fetches the page
+2. writes the result into `threads`
+3. updates `cursors.threads`
+4. optionally preserves the currently selected thread if still present
+5. otherwise clears selection on a full refresh
+
+This is why the app can support:
+
+- switching folders
+- mailbox-specific inbox views
+- search filtering
+- explicit `Load more` pagination
+
+without every view implementing its own thread loading logic.
+
+The thread list UI in `src/components/ThreadList.tsx` is intentionally simple because the controller already did the hard work.
+
+That component only needs:
+
+- thread array
+- selected thread ID
+- loading state
+- load-more capability
+- select callback
+
+It then renders:
+
+- skeleton cards on first load
+- one button per thread
+- star indicator
+- unread subject emphasis
+- load-more button when `nextCursor` exists
+
+This is a good example of the project’s UI architecture:
+
+complexity sits in the controller; rendering sits in the component.
+
+---
+
+## 176. Frontend Boot and Authentication Flowchart
+
+The boot-and-login path is one of the most important frontend flows, because every other feature depends on it.
+
+The following diagram summarizes what `useAppController()` is doing from first page load to an authenticated workspace.
+
+```mermaid
+flowchart TD
+  A["Browser loads React app"] --> B["App.tsx calls useAppController()"]
+  B --> C["boot() starts"]
+  C --> D["Fetch /api/runtime-config"]
+  D --> E["Normalize Firebase config"]
+  E --> F["ensureFirebaseAuth()"]
+  F --> G["Attach onIdTokenChanged() listener"]
+  G --> H{"Firebase user exists?"}
+  H -- "No" --> I["Set login screen state<br/>loginMessage = Sign in to continue"]
+  H -- "Yes" --> J["Get fresh Firebase ID token"]
+  J --> K["refreshBootstrap()"]
+  K --> L["Load zones"]
+  L --> M["connectRealtime()"]
+  M --> N["Show signed-in workspace"]
+  I --> O["User clicks Sign in with Google"]
+  O --> P["Load Google Identity Services script"]
+  P --> Q["Request Google access token popup"]
+  Q --> R["Create Firebase Google credential"]
+  R --> S["signInWithCredential()"]
+  S --> H
+```
+
+This explains the browser’s actual sequence more clearly than a prose-only explanation.
+
+The essential point is:
+
+- the app always boots through runtime config and Firebase initialization first
+- the UI only becomes a real workspace after Firebase supplies an ID token and bootstrap data is fetched
+
+---
+
+## 177. Thread Selection and Preview Behavior
+
+Selecting a thread is handled by `selectThreadAction(threadId)`.
+
+That function:
+
+1. calls `/api/threads/:id`
+2. stores the result in `selectedThread`
+3. updates the status message to show which thread was opened
+
+The preview component in `src/components/ThreadPreview.tsx` then renders from `selectedThread`.
+
+Its logic is:
+
+- if no thread is selected:
+  - show an empty prompt card
+- if a thread exists:
+  - take the latest message in the conversation
+  - render metadata bar
+  - render HTML preview if `html_body` exists
+  - otherwise render text body
+  - render attachment pills if attachments exist
+
+This is a very deliberate simplification.
+
+The preview panel is not trying to show every message in the conversation as separate stacked cards.
+
+Instead, it is behaving as a reading surface for the latest message plus thread context.
+
+That matches the product’s desktop-email-app posture more than a chat transcript posture.
+
+---
+
+## 178. HTML Email Preview Rendering
+
+HTML preview rendering is delegated to utilities in `src/lib/html.ts`, but `ThreadPreview.tsx` is where the browser chooses to use them.
+
+The preview uses:
+
+- an iframe
+- `sandbox="allow-popups allow-popups-to-escape-sandbox"`
+- `srcDoc={buildEmailPreviewDocument(message.html_body || '')}`
+
+This is important for three reasons.
+
+### First: isolation
+
+The message HTML does not run in the main app DOM.
+
+That prevents preview markup from corrupting the app shell layout.
+
+### Second: preview-specific adaptation
+
+`buildEmailPreviewDocument()` can adapt email markup for the available reading surface without mutating the stored message body itself.
+
+### Third: safety
+
+The iframe sandbox prevents the preview from becoming a privileged part of the main application shell.
+
+This is one of the most important browser-side safety boundaries in the product.
+
+---
+
+## 179. The Realtime Connection Lifecycle
+
+Realtime is managed entirely by `connectRealtime()` inside the controller.
+
+Its lifecycle is:
+
+1. acquire a fresh Firebase token
+2. build a WebSocket URL from `/api/realtime`
+3. switch protocol from `https` to `wss`
+4. attach `token` query parameter
+5. connect socket
+6. mark status as `connecting`
+7. on open:
+   - clear reconnect attempts
+   - mark realtime as `connected`
+   - set status to `Workspace ready.`
+8. on message:
+   - parse JSON event payload
+   - hand off to `handleRealtimeEvent()`
+9. on close:
+   - if socket belongs to current session, schedule reconnect
+10. on error:
+   - close the socket so the normal reconnect path handles it
+
+The `realtimeSessionRef` exists to prevent stale sockets from mutating current UI state after a reconnect or controlled disconnect.
+
+That detail matters because without session IDs, stale close events can cause false reconnect churn and misleading footer states.
+
+This bug class already existed in earlier iterations of the project and is exactly why that session guard matters.
+
+---
+
+## 180. Workspace Hydration and Realtime Flowchart
+
+The next diagram shows what happens after the browser already has a Firebase user.
+
+```mermaid
+flowchart TD
+  A["Firebase emits signed-in user"] --> B["Get fresh ID token"]
+  B --> C["Store token in tokenRef"]
+  C --> D["Set status: Loading workspace"]
+  D --> E["Call refreshBootstrap() -> /api/bootstrap"]
+  E --> F["Update user, data, counts, sending-domain state"]
+  F --> G{"Mail view active?"}
+  G -- "Yes" --> H["loadThreadsAction()"]
+  G -- "No" --> I["Skip thread load for now"]
+  H --> J["Optionally preserve selected thread"]
+  I --> K["loadZones()"]
+  J --> K
+  K --> L["connectRealtime()"]
+  L --> M{"WebSocket opens?"}
+  M -- "Yes" --> N["Realtime status = connected"]
+  M -- "No / closes later" --> O["Schedule reconnect with backoff"]
+  N --> P["Workspace ready"]
+  O --> L
+```
+
+This shows why the workspace feels like one coherent app even though multiple API calls and a realtime socket are involved.
+
+The controller makes those steps look like a single transition.
+
+---
+
+## 181. What Realtime Events Actually Do in the Browser
+
+`handleRealtimeEvent()` is the piece that turns backend realtime messages into UI updates.
+
+While the exact event list is defined on the backend side, frontend behavior conceptually falls into several groups:
+
+- new mail arrived
+- thread/message changed
+- routing or sending domain state changed
+- admin/configuration resources changed
+
+Depending on the event, the controller may:
+
+- refresh bootstrap data
+- refresh thread lists
+- preserve selected thread if possible
+- show a status/toast update
+
+This means the realtime layer is not trying to mirror every database mutation locally with handcrafted optimistic logic.
+
+Instead, it uses realtime events mostly as triggers to refresh authoritative data from the backend.
+
+That is a pragmatic consistency model:
+
+- simpler client logic
+- fewer drift bugs
+- slightly more backend round-tripping
+
+For this product, that tradeoff is sensible.
+
+---
+
+## 182. `AppShell.tsx`: The Stable Desktop Frame
+
+`src/components/AppShell.tsx` is the structural shell around the signed-in application.
+
+It composes four major pieces:
+
+- `SidebarNav`
+- `TopHeader`
+- alert banner slot
+- `StatusFooter`
+
+Its main responsibilities are:
+
+- converting controller state into shell-level props
+- choosing the correct header subtitle for the active view
+- wiring header actions to controller methods
+- placing the active page content inside `app-view-body`
+
+The shell itself does not know how to provision a domain or save a draft.
+
+It only knows where those flows belong in the visible workspace layout.
+
+This keeps the layout container stable even when the underlying operational behavior changes.
+
+---
+
+## 183. `SidebarNav.tsx`: Navigation, Counts, and Mailbox Context
+
+`SidebarNav.tsx` renders three classes of navigation:
+
+1. grouped top-level app views from `SIDEBAR_GROUPS`
+2. mailbox-specific inbox shortcuts
+3. account/sign-out block
+
+Important behavior:
+
+- view buttons can target:
+  - `mail:inbox`
+  - `mail:sent`
+  - `mail:archive`
+  - `mail:trash`
+  - `connections`
+  - `domains`
+  - `aliases`
+  - `destinations`
+  - `drafts`
+- folder badges come from `folderCounts`
+- mailbox badges come from `mailboxUnreadCounts`
+- mailbox rows use `onMailboxOpen()` to jump directly into a specific inbox
+
+This sidebar is therefore not just navigation chrome.
+
+It is also the place where the user sees:
+
+- global unread state
+- draft counts
+- mailbox-specific unread state
+- which mailbox or folder is currently active
+
+That makes it part workspace navigator, part compact operational dashboard.
+
+---
+
+## 184. `TopHeader.tsx`: Action Surface for the Current Context
+
+`TopHeader.tsx` is the action bar above the active page.
+
+Its job is to expose contextual actions without owning their logic.
+
+For mail views it shows:
+
+- search
+- compose
+- reply
+- forward
+- star/unstar
+- mark read / unread
+- archive
+- restore
+- delete / delete forever
+- empty trash
+- refresh
+
+The header title changes by view:
+
+- mail folders show their folder label
+- admin/config views show their own fixed labels
+
+This is operationally important because the same shell is used for:
+
+- inbox browsing
+- draft management
+- domain provisioning
+- alias management
+- forwarding management
+- provider connection management
+
+The header is the part that makes each context feel task-specific without requiring a totally separate page shell for each feature family.
+
+---
+
+## 185. Compose Is a Global Modal, Not a Page
+
+`ComposeModal.tsx` is one of the densest and most important frontend files.
+
+The compose experience is implemented as a global modal seeded by `composeSeed`.
+
+That means:
+
+- opening a blank composer
+- replying
+- forwarding
+- reopening a saved draft
+
+all produce a normalized `ComposeDraft` object and pass it into the same modal component.
+
+This is a strong architectural choice.
+
+Instead of multiple editors for multiple workflows, the app has one editor with multiple seed pathways.
+
+The seed is created by controller methods such as:
+
+- `openComposeAction()`
+- reply builder logic
+- forward builder logic
+- draft opening logic
+
+This keeps sending behavior, autosave behavior, AI behavior, and attachment behavior unified.
+
+---
+
+## 186. Compose State Model
+
+Inside `ComposeModal.tsx`, the modal owns its own local editor state:
+
+- `form`
+- `busy`
+- `htmlPanelMode`
+- `htmlStyles`
+- `draftSyncState`
+
+It also stores imperative editor refs:
+
+- `richEditorRef`
+- `visualEditorRef`
+- `sourceRef`
+- `autosaveTimerRef`
+- `autosavePromiseRef`
+- `autosaveQueuedRef`
+- `latestDraftRef`
+- `lastSavedSnapshotRef`
+- `hydrateEditorRef`
+
+This split is deliberate.
+
+The global app controller owns the existence of the compose session.
+The modal owns the minute-by-minute editor behavior.
+
+That prevents every keystroke from bouncing through the global workspace state.
+
+This is essential for preserving typing stability.
+
+---
+
+## 187. Rich Mode vs HTML Mode
+
+The compose model supports two editor modes:
+
+- `rich`
+- `html`
+
+### Rich mode
+
+The modal uses a content-editable rich editor surface and derives:
+
+- `htmlBody`
+- `textBody`
+
+from what the user sees.
+
+### HTML mode
+
+The modal supports three sub-panels:
+
+- `visual`
+- `split`
+- `source`
+
+This lets the user:
+
+- edit HTML source directly
+- see rendered HTML visually
+- or work in a hybrid mode
+
+This matters because the product is trying to serve two different but overlapping user types:
+
+- a normal email sender
+- a user who works with templates and marketing-style HTML email
+
+Supporting both in one composer is a core product feature, not a side experiment.
+
+---
+
+## 188. Autosave Is Serialized, Not Fire-and-Forget
+
+One of the most important compose design details is how autosave works.
+
+The modal uses:
+
+- `buildDraftSnapshot()`
+- `hasMeaningfulDraftContent()`
+- `scheduleAutosave()`
+- `persistDraft()`
+
+to prevent draft chaos.
+
+Key behaviors:
+
+- a draft is only saved if content is meaningful
+- a snapshot of meaningful fields is compared against the last saved snapshot
+- autosave is debounced
+- saves are serialized
+- overlapping save attempts queue behind the current save
+- once the active save finishes, a queued save can run if needed
+
+This matters because earlier versions of the project created too many draft rows while typing.
+
+The current design prevents that by treating draft saving as a stateful synchronization process rather than “send every keypress to the backend.”
+
+The modal also exposes draft state visually through `draftSyncState`, with messages like:
+
+- `Unsaved changes.`
+- `Saving draft...`
+- `Draft synced.`
+- `Draft save failed.`
+
+This is a strong user experience improvement because saving is no longer silent.
+
+---
+
+## 189. Compose and Autosave Flowchart
+
+The compose path is dense enough that a diagram is more efficient than prose alone.
+
+```mermaid
+flowchart TD
+  A["Controller opens compose and sets composeSeed"] --> B["ComposeModal hydrates local form state"]
+  B --> C["User edits fields, rich body, or HTML body"]
+  C --> D["scheduleAutosave() runs"]
+  D --> E{"Meaningful content and dirty snapshot?"}
+  E -- "No" --> F["Do nothing"]
+  E -- "Yes" --> G["Start debounce timer"]
+  G --> H["persistDraft()"]
+  H --> I{"Another save already running?"}
+  I -- "Yes" --> J["Queue a follow-up autosave"]
+  I -- "No" --> K["POST /api/drafts"]
+  K --> L["Update local draft id and folderCounts.drafts"]
+  L --> M["Set draftSyncState to success"]
+  J --> N["Run queued save after current save finishes"]
+  N --> H
+  C --> O["User clicks AI action"]
+  O --> P["Controller POSTs /api/ai/assist"]
+  P --> Q["AI result merged back into form"]
+  C --> R["User clicks Send"]
+  R --> S["Optional final persistDraft() sync"]
+  S --> T["POST /api/send"]
+  T --> U["Close compose and refresh relevant state"]
+```
+
+This is the real compose lifecycle.
+
+It is not a simple textarea with a send button.
+
+It is a synchronized editing system with draft persistence, AI mutation, attachment upload, and send orchestration.
+
+---
+
+## 190. Attachments and Inline Image Handling in Compose
+
+Compose attachment uploads are initiated through `uploadComposeAttachments()`.
+
+The flow is:
+
+1. user selects or drops files
+2. modal passes files to controller
+3. controller uploads each file to `/api/uploads`
+4. backend returns `UploadedAttachment`
+5. compose state appends the returned attachment descriptors
+
+This is used for normal attachments.
+
+The project also supports inline image insertion for HTML composition, where uploaded image URLs can be inserted directly into HTML.
+
+Conceptually, this turns the Worker into the asset host for compose-time images.
+
+That matters for email HTML because embedded references need a durable, externally reachable URL.
+
+---
+
+## 191. AI Actions in Compose
+
+The AI entry point in the controller is `runComposeAiAction()`.
+
+The modal gathers:
+
+- provider
+- model
+- tone
+- action
+- prompt
+- subject
+- text body
+- HTML body
+- selection text
+- recipients
+
+and sends them to `/api/ai/assist`.
+
+The controller wraps this with user-visible status transitions:
+
+- `Generating draft with Gemini...`
+- `Fixing grammar with Llama...`
+- error if the provider returns empty output
+- `AI draft ready.`
+
+This is important because AI in this product is not a separate chat panel.
+
+It is a transformation service embedded directly into the compose workflow.
+
+The output is expected to feed back into the active draft.
+
+That means the AI feature is not “LLM demo mode.” It is operational composition tooling.
+
+---
+
+## 192. Save-as-Template and Compose-to-Template Reuse
+
+Compose and template management are intentionally connected.
+
+The modal can save or reuse HTML content, and the domains/templates view allows saved HTML fragments to become reusable templates.
+
+That means a good HTML message can move through several stages:
+
+1. generated or hand-authored in compose
+2. saved as a draft
+3. promoted into a reusable HTML template
+4. used again in later messages
+
+This is a meaningful product loop because it turns one-off composition into reusable operational assets.
+
+---
+
+## 193. `ActionNotifications.tsx`: One Notification Surface for the Whole App
+
+The app uses a shared notification layer rendered at the top of `App.tsx`.
+
+It exposes two mechanisms:
+
+- `activeNotice`
+- `toasts`
+
+These correspond to two different UX patterns.
+
+### Active notice
+
+Used for ongoing work:
+
+- loading
+- sending
+- saving
+- generating
+- deleting
+
+This renders as a visible activity banner.
+
+### Toasts
+
+Used for completed or one-shot events:
+
+- success
+- warning
+- error
+- short informational notices
+
+This design is important because it gives the app a consistent interaction language.
+
+The user does not need to learn different feedback systems for:
+
+- drafts
+- AI actions
+- deletes
+- refreshes
+- sign-in
+
+Everything routes through the same visible notification layer.
+
+---
+
+## 194. Admin Views Are Thin Operational Faces Over Controller Methods
+
+The non-mail pages in `src/views/*.tsx` are intentionally thin.
+
+Examples:
+
+- `DomainsMailboxesView.tsx`
+- `DraftsView.tsx`
+- `AliasesView.tsx`
+- `DestinationsView.tsx`
+- `ConnectionsView.tsx`
+
+These views mostly do three things:
+
+1. render tables and forms
+2. map user input into controller method calls
+3. display current cached data from `controller.data`
+
+That means the actual operational logic for these pages still lives in the controller and backend.
+
+For example, `DomainsMailboxesView.tsx` displays:
+
+- provisioned domains
+- routing health
+- send capability
+- Resend DNS state
+- mailboxes
+- HTML templates
+- ingest failures
+
+But the heavy lifting is still performed by controller methods such as:
+
+- `provisionDomain()`
+- `selectSendingDomain()`
+- `refreshDomain()`
+- `repairDomainRouting()`
+- `saveMailbox()`
+- `deleteMailbox()`
+- `saveTemplate()`
+- `retryIngestFailure()`
+
+This keeps the views understandable and makes the controller the stable API between UI and backend.
+
+---
+
+## 195. `DraftsView.tsx`: Saved-Work UI
+
+`DraftsView.tsx` is a good example of how simple these views are when the controller contract is strong.
+
+It renders:
+
+- draft table
+- open button
+- per-draft delete
+- bulk delete all drafts
+- load-more drafts button when a cursor exists
+
+It does not implement:
+
+- draft normalization
+- attachment cleanup
+- deletion backend rules
+- pagination backend calls
+
+All of that is delegated to controller methods.
+
+This reinforces the overall frontend pattern:
+
+- view files stay legible
+- controller centralizes application behavior
+
+---
+
+## 196. Search Behavior
+
+The global mail search box lives in `TopHeader.tsx`, but search state lives in the controller.
+
+The flow is:
+
+1. user types into search input
+2. `controller.setSearchQuery()` updates local query state
+3. pressing Enter calls `controller.runSearch()`
+4. controller calls `loadThreadsAction()` with the current query
+
+This means search is not a separate route.
+
+It is just another filter applied to the thread list loading function.
+
+That is a pragmatic implementation because it reuses the same pagination, folder, and mailbox filtering pathway instead of introducing a second mail-list architecture.
+
+---
+
+## 197. Folder Actions and Thread State Mutations
+
+The top header wires many thread actions that are already implemented server-side.
+
+From the browser’s point of view, these include:
+
+- archive selected thread
+- restore selected thread
+- trash selected thread
+- permanently delete from trash
+- empty trash
+- star/unstar
+- mark read
+- mark unread
+
+The important frontend pattern is:
+
+- user clicks action
+- controller sends mutation request
+- controller refreshes relevant data
+- counts and selection state are updated
+- notifications show visible progress/outcome
+
+This means the browser is not trying to maintain a large optimistic state graph.
+
+It performs operations and then reconciles against backend truth.
+
+For an email client with many infrastructural side effects, that is a safer consistency model than trying to simulate everything locally.
+
+---
+
+## 198. How Pagination Is Exposed in the UI
+
+By this point in the project, pagination exists across several resource families.
+
+Frontend cursor state is stored in `CursorState`, including:
+
+- `threads`
+- `drafts`
+- `aliases`
+- `forwardDestinations`
+- `htmlTemplates`
+- `mailboxes`
+- `ingestFailures`
+
+The visible UI pattern is intentionally explicit:
+
+- load initial page
+- if `nextCursor` exists, show a `Load more` button
+
+This is used in:
+
+- thread list
+- drafts view
+- other admin tables where applicable
+
+The project deliberately did not hide pagination behind infinite scroll.
+
+For an operational app, explicit pagination is easier to reason about, easier to debug, and easier to document.
+
+---
+
+## 199. Why the Browser Can Be Read as a State Machine
+
+The easiest mental model for the frontend is:
+
+### Inputs
+
+- user clicks
+- form changes
+- Firebase auth changes
+- Worker HTTP responses
+- realtime socket messages
+
+### Core coordinator
+
+- `useAppController()`
+
+### Outputs
+
+- React state updates
+- visible shell changes
+- notification updates
+- compose modal state changes
+- API mutations
+- realtime reconnect attempts
+
+This model is useful because it removes the illusion that the UI is “just React components.”
+
+The browser application is really a stateful orchestrator.
+
+The components are simply the rendering faces of that orchestrator.
+
+---
+
+## 200. A Recommended Reading Order for the Frontend
+
+If someone wants to deeply understand the browser side, the best order is:
+
+1. `src/types.ts`
+   - learn the data vocabulary
+2. `src/App.tsx`
+   - learn the top-level application states
+3. `src/hooks/useAppController.tsx`
+   - learn the operational brain
+4. `src/components/AppShell.tsx`
+   - learn the workspace frame
+5. `src/components/TopHeader.tsx`
+   - learn contextual actions
+6. `src/components/SidebarNav.tsx`
+   - learn navigation and counters
+7. `src/components/ThreadList.tsx`
+   - learn inbox list rendering
+8. `src/components/ThreadPreview.tsx`
+   - learn reading surface behavior
+9. `src/components/ComposeModal.tsx`
+   - learn editor behavior
+10. `src/components/ActionNotifications.tsx`
+   - learn the feedback system
+11. `src/views/*.tsx`
+   - learn admin/configuration surfaces
+
+That sequence mirrors the actual layering of the frontend.
+
+---
+
+## 201. What Part 7 Should Cover Next
+
+After this frontend orchestration section, the next useful knowledgebase section should probably focus on utilities and cross-cutting helpers:
+
+- `src/lib/html.ts`
+- `src/lib/format.ts`
+- `src/lib/ai.js`
+- provider adapters
+- signature handling
+- HTML sanitization and preview transformation
+- how plain text is converted into compose HTML
+- how backend and frontend utility layers cooperate
+
+That would complete the picture between:
+
+- infrastructure
+- backend orchestration
+- frontend orchestration
+- shared utility behavior
+
+Part 6 explained how the browser thinks and behaves.
+Part 7 should explain the helper logic that makes that behavior practical.
