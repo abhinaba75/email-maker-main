@@ -13,6 +13,16 @@ export function ConnectionsView({ controller }: ConnectionsViewProps) {
   const gemini = getConnection(controller.data.connections, 'gemini');
   const groq = getConnection(controller.data.connections, 'groq');
 
+  function getConnectionStateText(connection: typeof cf) {
+    if (!connection) return 'Not connected';
+    if (connection.status === 'reconnect_required') {
+      return connection.metadata?.secretError
+        ? `Reconnect required: ${String(connection.metadata.secretError)}`
+        : 'Reconnect required.';
+    }
+    return `Connected (${connection.secretMask || 'secret stored'})`;
+  }
+
   const [cloudflareForm, setCloudflareForm] = useState({ label: cf?.label || 'Cloudflare', token: '' });
   const [resendForm, setResendForm] = useState({ label: resend?.label || 'Resend', apiKey: '' });
   const [geminiForm, setGeminiForm] = useState({
@@ -49,7 +59,7 @@ export function ConnectionsView({ controller }: ConnectionsViewProps) {
               <span>API token</span>
               <input type="password" placeholder="Cloudflare API token" value={cloudflareForm.token} onChange={(event) => setCloudflareForm((current) => ({ ...current, token: event.target.value }))} />
             </label>
-            <div className="helper-copy">Stored encrypted on the Worker. Current: {cf?.secretMask || 'Not connected'}</div>
+            <div className="helper-copy">Stored encrypted on the Worker. Current: {getConnectionStateText(cf)}</div>
             <button type="submit" className="primary-button">Save Cloudflare connection</button>
           </form>
 
@@ -69,7 +79,7 @@ export function ConnectionsView({ controller }: ConnectionsViewProps) {
               <span>API key</span>
               <input type="password" placeholder="re_..." value={resendForm.apiKey} onChange={(event) => setResendForm((current) => ({ ...current, apiKey: event.target.value }))} />
             </label>
-            <div className="helper-copy">Stored encrypted on the Worker. Current: {resend?.secretMask || 'Not connected'}</div>
+            <div className="helper-copy">Stored encrypted on the Worker. Current: {getConnectionStateText(resend)}</div>
             <button type="submit" className="primary-button">Save Resend connection</button>
           </form>
 
@@ -97,7 +107,7 @@ export function ConnectionsView({ controller }: ConnectionsViewProps) {
                 ))}
               </select>
             </label>
-            <div className="helper-copy">Stored encrypted on the Worker. Current: {gemini?.secretMask || 'Not connected'}</div>
+            <div className="helper-copy">Stored encrypted on the Worker. Current: {getConnectionStateText(gemini)}</div>
             <button type="submit" className="primary-button">Save Gemini connection</button>
           </form>
 
@@ -117,7 +127,7 @@ export function ConnectionsView({ controller }: ConnectionsViewProps) {
               <span>API key</span>
               <input type="password" placeholder="gsk_..." value={groqForm.apiKey} onChange={(event) => setGroqForm((current) => ({ ...current, apiKey: event.target.value }))} />
             </label>
-            <div className="helper-copy">Stored encrypted on the Worker. Current: {groq?.secretMask || 'Not connected'}</div>
+            <div className="helper-copy">Stored encrypted on the Worker. Current: {getConnectionStateText(groq)}</div>
             <div className="helper-copy">Fixed model: <code>llama-3.3-70b-versatile</code></div>
             <button type="submit" className="primary-button">Save Llama connection</button>
           </form>

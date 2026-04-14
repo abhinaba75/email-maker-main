@@ -35,6 +35,7 @@ export interface ConnectionSummary {
   id: string;
   provider: 'cloudflare' | 'resend' | 'gemini' | 'groq' | string;
   label: string;
+  status?: string;
   secretMask?: string;
   metadata?: Record<string, unknown>;
 }

@@ -573,20 +573,70 @@ export class RealtimeHub {
 async function loadSecret(db, env, userId, provider) {
   const connection = await getConnection(db, userId, provider);
   if (!connection) return null;
-  return {
-    ...connection,
-    secret: await decryptText(env.APP_ENCRYPTION_KEY, connection.secret_ciphertext),
-  };
+  try {
+    return {
+      ...connection,
+      secret: await decryptText(env.APP_ENCRYPTION_KEY, connection.secret_ciphertext),
+    };
+  } catch (error) {
+    console.error('provider_secret_decrypt_failed', {
+      provider,
+      userId,
+      message: error?.message || String(error),
+    });
+    const providerLabel = provider === 'groq'
+      ? 'Llama'
+      : provider === 'cloudflare'
+        ? 'Cloudflare'
+        : provider === 'resend'
+          ? 'Resend'
+          : provider === 'gemini'
+            ? 'Gemini'
+            : provider;
+    const wrapped = new Error(
+      `${providerLabel} connection needs to be re-saved. Stored secret can no longer be decrypted, likely because APP_ENCRYPTION_KEY changed.`,
+    );
+    wrapped.status = 400;
+    wrapped.code = 'connection_secret_invalid';
+    wrapped.provider = provider;
+    throw wrapped;
+  }
 }
 
-function toConnectionSummary(connection) {
+async function tryLoadSecret(db, env, userId, provider) {
+  try {
+    return {
+      connection: await loadSecret(db, env, userId, provider),
+      error: null,
+    };
+  } catch (error) {
+    if (error?.code === 'connection_secret_invalid') {
+      return {
+        connection: null,
+        error,
+      };
+    }
+    throw error;
+  }
+}
+
+function toConnectionSummary(connection, options = {}) {
   if (!connection) return null;
+  const metadata = {
+    ...(connection.metadata_json || {}),
+    ...(options.error
+      ? {
+          reconnectRequired: true,
+          secretError: options.error.message,
+        }
+      : {}),
+  };
   return {
     id: connection.id,
     provider: connection.provider,
     label: connection.label,
-    status: connection.status,
-    metadata: connection.metadata_json || {},
+    status: options.error ? 'reconnect_required' : connection.status,
+    metadata,
     secretMask: connection.metadata_json?.secretMask || '',
     createdAt: connection.created_at,
     updatedAt: connection.updated_at,
@@ -616,7 +666,7 @@ function buildWorkerRulePayload(domain, { isCatchAll, localPart, enabled }) {
 }
 
 async function reconcileAliasRoutes(db, env, userId, options = {}) {
-  const cf = await loadSecret(db, env, userId, 'cloudflare');
+  const { connection: cf } = await tryLoadSecret(db, env, userId, 'cloudflare');
   if (!cf) return;
 
   const [domains, aliases] = await Promise.all([
@@ -733,7 +783,7 @@ async function resolveSelectedSendingDomainId(db, userId, user, domains) {
 
 async function reconcileSendingDomainState(db, env, userId, options = {}) {
   const resendConnection = options.resendConnection === undefined
-    ? await loadSecret(db, env, userId, 'resend')
+    ? (await tryLoadSecret(db, env, userId, 'resend')).connection
     : options.resendConnection;
   let domains = options.domains || await listDomains(db, userId);
   if (options.refreshResendMetadata && resendConnection) {
@@ -827,12 +877,16 @@ async function bootstrapData(db, env, userId) {
     getFolderCounts(db, userId),
     getMailboxUnreadCounts(db, userId),
   ]);
-  const [cfConnection, resendConnection, aliases] = await Promise.all([
-    loadSecret(db, env, userId, 'cloudflare'),
-    loadSecret(db, env, userId, 'resend'),
+  const [cfSecretState, resendSecretState, geminiSecretState, groqSecretState, aliases] = await Promise.all([
+    tryLoadSecret(db, env, userId, 'cloudflare'),
+    tryLoadSecret(db, env, userId, 'resend'),
+    tryLoadSecret(db, env, userId, 'gemini'),
+    tryLoadSecret(db, env, userId, 'groq'),
     listAliasRules(db, userId),
   ]);
-  const resendConnected = connections.some((connection) => connection.provider === 'resend');
+  const cfConnection = cfSecretState.connection;
+  const resendConnection = resendSecretState.connection;
+  const resendConnected = Boolean(resendConnection);
   const selectedSendingDomainId = domains.some((domain) => domain.id === user?.selected_sending_domain_id)
     ? user.selected_sending_domain_id
     : null;
@@ -862,7 +916,18 @@ async function bootstrapData(db, env, userId) {
     }),
   );
   return {
-    connections: connections.map(toConnectionSummary),
+    connections: connections.map((connection) => {
+      const error = connection.provider === 'cloudflare'
+        ? cfSecretState.error
+        : connection.provider === 'resend'
+          ? resendSecretState.error
+          : connection.provider === 'gemini'
+            ? geminiSecretState.error
+            : connection.provider === 'groq'
+              ? groqSecretState.error
+          : null;
+      return toConnectionSummary(connection, { error });
+    }),
     domains: hydratedDomains,
     mailboxes: mailboxesPage.items,
     folderCounts,
@@ -894,7 +959,8 @@ async function saveProviderConnection(db, env, userId, provider, label, secret, 
 async function handleCloudflareConnection(request, env, user) {
   if (request.method === 'GET') {
     const connection = await getConnection(env.DB, user.id, 'cloudflare');
-    return json({ connection: toConnectionSummary(connection) });
+    const secretState = await tryLoadSecret(env.DB, env, user.id, 'cloudflare');
+    return json({ connection: toConnectionSummary(connection, { error: secretState.error }) });
   }
 
   const body = await readJson(request);
@@ -923,7 +989,8 @@ async function handleCloudflareConnection(request, env, user) {
 async function handleResendConnection(request, env, user) {
   if (request.method === 'GET') {
     const connection = await getConnection(env.DB, user.id, 'resend');
-    return json({ connection: toConnectionSummary(connection) });
+    const secretState = await tryLoadSecret(env.DB, env, user.id, 'resend');
+    return json({ connection: toConnectionSummary(connection, { error: secretState.error }) });
   }
 
   const body = await readJson(request);
@@ -962,7 +1029,8 @@ async function handleResendConnection(request, env, user) {
 async function handleGeminiConnection(request, env, user) {
   if (request.method === 'GET') {
     const connection = await getConnection(env.DB, user.id, 'gemini');
-    return json({ connection: toConnectionSummary(connection) });
+    const secretState = await tryLoadSecret(env.DB, env, user.id, 'gemini');
+    return json({ connection: toConnectionSummary(connection, { error: secretState.error }) });
   }
 
   const body = await readJson(request);
@@ -993,7 +1061,8 @@ async function handleGeminiConnection(request, env, user) {
 async function handleGroqConnection(request, env, user) {
   if (request.method === 'GET') {
     const connection = await getConnection(env.DB, user.id, 'groq');
-    return json({ connection: toConnectionSummary(connection) });
+    const secretState = await tryLoadSecret(env.DB, env, user.id, 'groq');
+    return json({ connection: toConnectionSummary(connection, { error: secretState.error }) });
   }
 
   const body = await readJson(request);
@@ -2153,7 +2222,7 @@ function shouldRetryIngestFailure(failure, now = Date.now()) {
 async function refreshUserReliabilityState(env, userId) {
   const user = await getUser(env.DB, userId);
   if (!user) return;
-  const resendConnection = await loadSecret(env.DB, env, userId, 'resend');
+  const resendConnection = (await tryLoadSecret(env.DB, env, userId, 'resend')).connection;
   await reconcileSendingDomainState(env.DB, env, userId, {
     user,
     resendConnection,
@@ -2161,7 +2230,7 @@ async function refreshUserReliabilityState(env, userId) {
   });
   const domains = await listDomains(env.DB, userId);
   const aliases = await listAliasRules(env.DB, userId);
-  const cfConnection = await loadSecret(env.DB, env, userId, 'cloudflare');
+  const cfConnection = (await tryLoadSecret(env.DB, env, userId, 'cloudflare')).connection;
   await Promise.all(
     domains.map((domain) =>
       collectDomainDiagnostics(
