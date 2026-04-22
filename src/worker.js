@@ -401,28 +401,29 @@ function summarizeResendDnsRecords(domainDetails) {
   };
 }
 
-async function collectDomainDiagnostics(db, env, userId, domain, aliasRules, cfConnection, resendConnection) {
-  const diagnostics = {
-    emailWorkerBound: false,
+function buildCachedDomainDiagnostics(domain, aliasRules = []) {
+  const catchAllAlias = aliasRules.find((alias) => alias.is_catch_all);
+  const mailboxTarget = domain.default_mailbox || null;
+  return {
+    emailWorkerBound: domain.routing_status === 'enabled',
     mxStatus: domain.routing_status === 'enabled' ? 'ready' : 'unknown',
-    catchAllStatus: 'not_configured',
-    catchAllPreview: null,
-    routingRuleStatus: 'unknown',
+    catchAllStatus: catchAllAlias ? 'unknown' : 'not_configured',
+    catchAllPreview: catchAllAlias
+      ? (mailboxTarget ? `*@${domain.hostname} -> ${mailboxTarget}` : `*@${domain.hostname} -> ${catchAllAlias.mode}`)
+      : null,
+    routingRuleStatus: aliasRules.some((alias) => !alias.is_catch_all && alias.enabled !== 0) ? 'unknown' : 'not_configured',
     routingReady: false,
     dnsIssues: [],
     resendDnsRecords: [],
     resendDnsStatus: domain.resend_status || 'not_started',
     lastRoutingCheckAt: domain.routing_checked_at || null,
-    diagnosticError: null,
+    diagnosticError: domain.routing_error || null,
   };
+}
 
+async function collectDomainDiagnostics(db, env, userId, domain, aliasRules, cfConnection, resendConnection) {
+  const diagnostics = buildCachedDomainDiagnostics(domain, aliasRules);
   const catchAllAlias = aliasRules.find((alias) => alias.is_catch_all);
-  const mailboxTarget = domain.default_mailbox || null;
-  if (catchAllAlias) {
-    diagnostics.catchAllPreview = mailboxTarget
-      ? `*@${domain.hostname} -> ${mailboxTarget}`
-      : `*@${domain.hostname} -> ${catchAllAlias.mode}`;
-  }
 
   if (!cfConnection?.secret || !domain.zone_id) {
     return diagnostics;
